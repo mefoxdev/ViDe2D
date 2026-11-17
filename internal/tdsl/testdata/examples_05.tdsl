@@ -1,0 +1,20 @@
+var vy = 0                      # вертикальная скорость
+
+when key left held
+  move left by 100 per second avoiding "floor"
+  flip = yes
+
+when key right held
+  move right by 100 per second avoiding "floor"
+  flip = no
+
+when key space pressed
+  if touching("floor", down)    # стою на земле?
+    vy = -280
+    play sound "jump.wav"
+
+when update
+  vy += 800 per second          # гравитация
+  move down by vy per second avoiding "floor"
+  if touching("floor", down) and vy > 0
+    vy = 0

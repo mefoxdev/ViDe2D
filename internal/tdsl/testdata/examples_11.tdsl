@@ -1,0 +1,27 @@
+shared lives = 3
+shared score = 0
+shared best = 0
+var playing = yes
+
+to show_info()
+  text = "Жизни: {lives}   Очки: {score}   Рекорд: {best}"
+
+when start
+  best = recall("best", 0)
+  show_info()
+
+when every 1 second
+  if playing
+    score += 1
+    show_info()
+
+when message "refresh"
+  show_info()
+
+when message "game over"
+  playing = no
+  if score > best
+    remember "best" as score
+  text = "Игра окончена! Очки: {score}"
+  wait 3 seconds
+  restart scene

@@ -1,0 +1,10 @@
+# level2.tdsl — the second scene: "shared" variables (coins) came along from the first one
+
+when start
+  var wins = recall("wins", 0) + 1
+  remember "wins" as wins
+  text = "Level 2! Coins carried over: {coins}. You got here {wins} time(s). Press Enter to play again."
+
+when key enter pressed
+  coins = 0
+  go to scene "main"

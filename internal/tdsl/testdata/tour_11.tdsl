@@ -1,0 +1,6 @@
+to heal(amount)
+  lives = min(lives + amount, 3)
+  print "Жизней: {lives}"
+
+when key h pressed
+  heal(1)

@@ -1,0 +1,10 @@
+var score = 0
+
+when update
+  score = round(score * 1.5)
+  if touching("floor", down) and round (score) > 3
+    next round
+
+when key space pressed
+  var steps = round(abs(-2.4)) + floor(3.7) + ceil(1.2)
+  move right by steps

@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "type": "map",
+  "optimization": false,
+  "image_mode": "pixel",
+  "scene": {
+    "name": "Sandbox",
+    "kind": "Node",
+    "children": [
+      {
+        "name": "Floor",
+        "kind": "Sprite",
+        "x": 0,
+        "y": 150,
+        "w": 3000,
+        "h": 30,
+        "color": "#7a5c3a"
+      },
+      {
+        "name": "Hero",
+        "kind": "Instance",
+        "x": 40,
+        "y": 120,
+        "ref": "game/objects/hero.vide.json"
+      }
+    ]
+  }
+}

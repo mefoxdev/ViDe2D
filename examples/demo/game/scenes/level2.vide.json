@@ -1,0 +1,24 @@
+{
+  "version": 3,
+  "type": "scene",
+  "image_mode": "pixel",
+  "map": "game/maps/world.vide.json",
+  "scene": {
+    "name": "Level 2",
+    "kind": "Node",
+    "children": [
+      {
+        "name": "Info",
+        "kind": "Text",
+        "x": 6,
+        "y": 6,
+        "w": 300,
+        "h": 28,
+        "color": "#e2e5ec",
+        "text": "Level 2",
+        "font_size": 10,
+        "script": "scripts/level2.tdsl"
+      }
+    ]
+  }
+}
