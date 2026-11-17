@@ -293,3 +293,12 @@ func TestFloorDiv(t *testing.T) {
 		}
 	}
 }
+
+func TestTailBufferKeepsEnd(t *testing.T) {
+	b := &tailBuffer{max: 5}
+	b.Write([]byte("abc"))
+	b.Write([]byte("defgh"))
+	if got := b.String(); got != "defgh" {
+		t.Fatalf("got %q", got)
+	}
+}

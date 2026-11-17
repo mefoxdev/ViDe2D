@@ -84,6 +84,8 @@ type Studio struct {
 	menu     objMenu
 	dlg      newDlg
 
+	game player // the running game, if any
+
 	closeWarnAt int // tick of the last "unsaved changes" warning on close; 0 if none
 
 	path  string // project file; empty disables saving
@@ -278,6 +280,7 @@ func (s *Studio) Update() error {
 	u.Pressed, u.Wheel = pressed, wheel
 	s.modalUI()
 	s.updateDirty()
+	s.pollPlay()
 	return nil
 }
 
@@ -358,7 +361,7 @@ func (s *Studio) toolbar(r image.Rectangle) {
 	}
 	x += 20
 	if btn("Play", 70, true) {
-		s.Logf("Play: the ViDe2D runtime is not connected yet.")
+		s.play()
 	}
 	if s.w < 1300 {
 		return
