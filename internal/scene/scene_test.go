@@ -47,3 +47,18 @@ func TestWalkOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestRename(t *testing.T) {
+	s := New("Main")
+	a := s.Add(nil, KindNode, "A")
+	b := s.Add(nil, KindNode, "B")
+	if !s.Rename(b, "  A ") || b.Name != "A2" {
+		t.Fatalf("got %q", b.Name)
+	}
+	if !s.Rename(a, "A") || a.Name != "A" {
+		t.Fatalf("self rename: %q", a.Name)
+	}
+	if s.Rename(a, "   ") || a.Name != "A" {
+		t.Fatal("empty name accepted")
+	}
+}

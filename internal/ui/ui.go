@@ -56,6 +56,12 @@ type Context struct {
 	Shift, Space              bool
 
 	cmds []func(dst *ebiten.Image)
+
+	// text field state
+	focus, nextFocus, nextBuf string
+	focusSeen                 bool
+	buf                       []rune
+	caret, frame              int
 }
 
 // New creates a Context with the built-in font.
@@ -79,7 +85,17 @@ func (c *Context) Begin() {
 	c.MiddlePressed = inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonMiddle)
 	_, c.Wheel = ebiten.Wheel()
 	c.Shift = ebiten.IsKeyPressed(ebiten.KeyShift)
-	c.Space = ebiten.IsKeyPressed(ebiten.KeySpace)
+	c.frame++
+	if c.focus != "" && !c.focusSeen {
+		c.focus = "" // focused field was not drawn: drop the edit
+	}
+	c.focusSeen = false
+	if c.nextFocus != "" {
+		c.focus, c.buf = c.nextFocus, []rune(c.nextBuf)
+		c.caret, c.frame, c.nextFocus = len(c.buf), 0, ""
+		c.focusSeen = true
+	}
+	c.Space = c.focus == "" && ebiten.IsKeyPressed(ebiten.KeySpace)
 	c.cmds = c.cmds[:0]
 }
 

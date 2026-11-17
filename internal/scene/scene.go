@@ -4,6 +4,7 @@ package scene
 import (
 	"fmt"
 	"image/color"
+	"strings"
 )
 
 // Kind is the type of a node.
@@ -71,6 +72,22 @@ func (s *Scene) Remove(n *Node) bool {
 		}
 	}
 	n.Parent = nil
+	return true
+}
+
+// Rename changes a node's name, keeping it unique among siblings.
+// It returns false if the trimmed name is empty.
+func (s *Scene) Rename(n *Node, name string) bool {
+	name = strings.TrimSpace(name)
+	if n == nil || name == "" {
+		return false
+	}
+	if n.Parent == nil {
+		n.Name = name
+		return true
+	}
+	n.Name = "" // exclude self from the taken set
+	n.Name = uniqueName(n.Parent, name)
 	return true
 }
 

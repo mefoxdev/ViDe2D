@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"strconv"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
@@ -196,18 +197,20 @@ func (s *Studio) inspector(r image.Rectangle) {
 		y += ui.LineHeight + 4
 		return r
 	}
-	u.Text(line(), n.Name, u.Theme.Text)
+	if name, ok := u.Field(fmt.Sprintf("name%d", n.ID), line(), n.Name, false); ok && s.scene.Rename(n, name) {
+		s.Logf("Renamed to %s", n.Name)
+	}
 	u.Text(line(), "Type: "+string(n.Kind), u.Theme.TextDim)
 	y += 6
 	step := 1
 	if u.Shift {
 		step = 8
 	}
-	s.stepper(line(), "X", &n.X, step)
-	s.stepper(line(), "Y", &n.Y, step)
+	s.stepper(n.ID, line(), "X", &n.X, step)
+	s.stepper(n.ID, line(), "Y", &n.Y, step)
 	if n.Kind == scene.KindSprite {
-		s.stepper(line(), "Width", &n.W, step)
-		s.stepper(line(), "Height", &n.H, step)
+		s.stepper(n.ID, line(), "Width", &n.W, step)
+		s.stepper(n.ID, line(), "Height", &n.H, step)
 		n.W, n.H = max(n.W, 1), max(n.H, 1)
 		cr := line()
 		u.Text(image.Rect(cr.Min.X, cr.Min.Y, cr.Min.X+60, cr.Max.Y), "Color", u.Theme.TextDim)
@@ -223,25 +226,26 @@ func (s *Studio) inspector(r image.Rectangle) {
 		}
 	}
 	y += 6
-	u.Text(line(), "Shift: step 8", u.Theme.TextDim)
+	u.Text(line(), "Shift: step 8 • Enter: apply", u.Theme.TextDim)
 }
 
-func (s *Studio) stepper(r image.Rectangle, label string, v *int, step int) {
+func (s *Studio) stepper(id int, r image.Rectangle, label string, v *int, step int) {
 	u := s.ui
 	u.Text(image.Rect(r.Min.X, r.Min.Y, r.Min.X+60, r.Max.Y), label, u.Theme.TextDim)
 	minus := image.Rect(r.Max.X-120, r.Min.Y, r.Max.X-96, r.Max.Y)
 	plus := image.Rect(r.Max.X-24, r.Min.Y, r.Max.X, r.Max.Y)
+	val := image.Rect(minus.Max.X+2, r.Min.Y, plus.Min.X-2, r.Max.Y)
+	if str, ok := u.Field(fmt.Sprintf("%s%d", label, id), val, fmt.Sprint(*v), true); ok {
+		if x, err := strconv.Atoi(str); err == nil {
+			*v = x
+		}
+	}
 	if u.Button(minus, "-", true) {
 		*v -= step
 	}
 	if u.Button(plus, "+", true) {
 		*v += step
 	}
-	val := image.Rect(minus.Max.X, r.Min.Y, plus.Min.X, r.Max.Y)
-	str := fmt.Sprint(*v)
-	u.Emit(func(d *ebiten.Image) {
-		u.DrawText(d, str, float64(val.Min.X)+(float64(val.Dx())-u.TextWidth(str))/2, float64(val.Min.Y+(val.Dy()-ui.FontSize)/2-1), u.Theme.Text)
-	})
 }
 
 func (s *Studio) console(r image.Rectangle) {
@@ -270,7 +274,7 @@ func (s *Studio) toWorld(x, y int) (int, int) {
 
 func (s *Studio) viewport(r image.Rectangle) {
 	u := s.ui
-	if (!s.camMoved || inpututil.IsKeyJustPressed(ebiten.KeyF)) && r.Dx() > 0 {
+	if (!s.camMoved || (inpututil.IsKeyJustPressed(ebiten.KeyF) && !u.Focused())) && r.Dx() > 0 {
 		s.camMoved = false
 		s.originX = float64(r.Min.X) + float64(r.Dx()-gameW*s.zoom)/2
 		s.originY = float64(r.Min.Y) + float64(r.Dy()-gameH*s.zoom)/2
