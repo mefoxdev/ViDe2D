@@ -2,15 +2,19 @@
 package studio
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"math"
+	"os"
 	"strconv"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 
+	"github.com/vide2d/vide-studio/internal/project"
 	"github.com/vide2d/vide-studio/internal/scene"
 	"github.com/vide2d/vide-studio/internal/ui"
 )
@@ -51,18 +55,102 @@ type Studio struct {
 	grabX, grabY     int
 
 	treeScroll int
+
+	path  string // project file; empty disables saving
+	saved []byte // serialized scene as last saved/loaded
+	dirty bool
+	title string
+	tick  int
 }
 
-// New creates a studio with a small demo scene.
-func New() *Studio {
-	s := &Studio{ui: ui.New(), scene: scene.New("Main"), zoom: 2}
-	hero := s.scene.Add(nil, scene.KindSprite, "Hero")
-	hero.X, hero.Y, hero.Color = 40, 60, palette[4]
-	coin := s.scene.Add(nil, scene.KindSprite, "Coin")
-	coin.X, coin.Y, coin.W, coin.H, coin.Color = 200, 90, 8, 8, palette[2]
-	s.sel = hero
-	s.Logf("ViDe-studio started. Middle mouse / Space+drag: pan, wheel: zoom, drag objects to move, F: center view.")
+// New creates a studio. If path exists it is loaded, otherwise a small demo
+// scene is created and path is where Save writes. An unreadable file is never
+// overwritten: saving is disabled until the problem is fixed.
+func New(path string) *Studio {
+	s := &Studio{ui: ui.New(), zoom: 2, path: path}
+	loaded := false
+	if path != "" {
+		sc, err := project.Load(path)
+		switch {
+		case err == nil:
+			s.scene, loaded = sc, true
+			s.Logf("Opened %s", path)
+		case errors.Is(err, os.ErrNotExist):
+			s.Logf("New project: %s (Ctrl+S to save)", path)
+		default:
+			s.Logf("Cannot open %s: %v", path, err)
+			s.Logf("Saving is disabled so the file is not overwritten.")
+			s.path = ""
+		}
+	}
+	if !loaded {
+		s.scene = demoScene()
+	}
+	s.sel = s.scene.Root
+	if !loaded && len(s.scene.Root.Children) > 0 {
+		s.sel = s.scene.Root.Children[0]
+	}
+	if data, err := project.Marshal(s.scene); err == nil && loaded {
+		s.saved = data
+	}
+	s.Logf("Middle mouse / Space+drag: pan, wheel: zoom, drag objects to move, F: center view.")
 	return s
+}
+
+func demoScene() *scene.Scene {
+	sc := scene.New("Main")
+	hero := sc.Add(nil, scene.KindSprite, "Hero")
+	hero.X, hero.Y, hero.Color = 40, 60, palette[4]
+	coin := sc.Add(nil, scene.KindSprite, "Coin")
+	coin.X, coin.Y, coin.W, coin.H, coin.Color = 200, 90, 8, 8, palette[2]
+	return sc
+}
+
+func (s *Studio) save() {
+	if s.path == "" {
+		s.Logf("Saving is disabled.")
+		return
+	}
+	data, err := project.Marshal(s.scene)
+	if err == nil {
+		err = project.Save(s.path, data)
+	}
+	if err != nil {
+		s.Logf("Save failed: %v", err)
+		return
+	}
+	s.saved = data
+	s.Logf("Saved %s", s.path)
+}
+
+func (s *Studio) revert() {
+	sc, err := project.Load(s.path)
+	if err != nil {
+		s.Logf("Revert failed: %v", err)
+		return
+	}
+	s.scene, s.sel, s.dragging = sc, sc.Root, nil
+	s.saved, _ = project.Marshal(sc)
+	s.Logf("Reverted to %s", s.path)
+}
+
+func (s *Studio) updateDirty() {
+	if s.tick++; s.tick%20 != 0 {
+		return
+	}
+	data, err := project.Marshal(s.scene)
+	s.dirty = err != nil || !bytes.Equal(data, s.saved)
+	title := "ViDe-studio"
+	if s.path != "" {
+		title += " — " + s.path
+	}
+	if s.dirty {
+		title += " *"
+	}
+	if title != s.title {
+		s.title = title
+		ebiten.SetWindowTitle(title)
+	}
 }
 
 // Logf appends a line to the console.
@@ -95,6 +183,10 @@ func (s *Studio) Update() error {
 	s.treePanel(left)
 	s.inspector(right)
 	s.console(bottom)
+	if ebiten.IsKeyPressed(ebiten.KeyControl) && inpututil.IsKeyJustPressed(ebiten.KeyS) && !u.Focused() {
+		s.save()
+	}
+	s.updateDirty()
 	return nil
 }
 
@@ -130,10 +222,17 @@ func (s *Studio) toolbar(r image.Rectangle) {
 		s.Logf("Deleted %s", name)
 	}
 	x += 20
+	if btn("Save", 70, s.path != "") {
+		s.save()
+	}
+	if btn("Revert", 70, s.path != "") {
+		s.revert()
+	}
+	x += 20
 	if btn("Play", 70, true) {
 		s.Logf("Play: the ViDe2D runtime is not connected yet.")
 	}
-	u.Text(image.Rect(s.w-260, r.Min.Y, s.w-8, r.Max.Y), "ViDe-studio  •  scene: "+s.scene.Root.Name, u.Theme.TextDim)
+	u.Text(image.Rect(s.w-260, r.Min.Y, s.w-8, r.Max.Y), "scene: "+s.scene.Root.Name+map[bool]string{true: " *", false: ""}[s.dirty], u.Theme.TextDim)
 }
 
 func (s *Studio) treePanel(r image.Rectangle) {
