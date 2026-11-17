@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/vide2d/vide-studio/internal/scene"
 )
@@ -22,9 +23,23 @@ type Options struct {
 	// ChunkRadius is the number of chunks kept loaded around the view
 	// (0 means DefaultChunkRadius).
 	ChunkRadius int
-	// Attach is called for every entity as it enters the world, so that a
-	// script VM can set e.Behavior. May be nil.
+	// Attach is called for every entity as it enters the world, so that
+	// custom logic can set e.Behavior. May be nil. It runs after the script
+	// attachment below and may replace its Behavior.
 	Attach func(e *Entity)
+
+	// Scripts turns on TrueDSL: every entity with a Script gets a script
+	// behavior (compiled on its first step, see script.go).
+	Scripts bool
+	// Input is the keyboard the scripts see. Nil means a fresh InputState,
+	// which the Ebitengine front end then feeds from the real keyboard.
+	Input Input
+	// Log receives the "print" output of scripts and script errors, one
+	// message per call (it may span several lines). Nil means stderr.
+	Log func(msg string)
+	// Seed seeds the random numbers of scripts. The same seed and the same
+	// input give the same game; the caller picks it (never the engine).
+	Seed uint64
 }
 
 // chunkUnit is one map chunk, loadable and unloadable on its own. The parsed
@@ -34,6 +49,8 @@ type chunkUnit struct {
 	node   *scene.Node
 	ents   []*Entity
 	loaded bool
+	state  ChunkState
+	ids    map[string]int // entity id by node path: the same node keeps its id across reloads
 }
 
 // World is everything that exists while the game runs.
@@ -50,13 +67,20 @@ type World struct {
 	Tick uint64
 	// Optimized reports that the map is cut into chunks that load on demand.
 	Optimized bool
+	// Input is the keyboard state scripts read; nil without scripts.
+	Input Input
 
 	src       *Source
 	opts      Options
-	mapStatic []*Entity // map content that is always present
+	mapStatic []*Entity    // map content that is always present
+	scene     *scene.Scene // the scene document, for the names of all objects
+	mapDoc    *scene.Scene
 	chunks    map[ChunkKey]*chunkUnit
 	order     []ChunkKey // all chunks, sorted by (Y, X)
 	content   []*Entity  // the scene's own entities
+	scripts   *scriptRuntime
+	byID      map[int]*Entity // live entities that scripts can address
+	destroyQ  []*Entity
 	nextID    int
 	live      int
 	synced    bool
@@ -83,14 +107,21 @@ func NewWorld(src *Source, sc *scene.Scene, opts Options) (*World, error) {
 	w := &World{
 		Name: sc.Root.Name, TileSize: sc.TileSize, ViewW: sc.ViewW, ViewH: sc.ViewH,
 		TickRate: sc.TickRate, ImageMode: sc.ImageMode,
-		src: src, opts: opts, chunks: map[ChunkKey]*chunkUnit{},
+		src: src, opts: opts, scene: sc, chunks: map[ChunkKey]*chunkUnit{}, byID: map[int]*Entity{},
+	}
+	if opts.Scripts {
+		w.Input = opts.Input
+		if w.Input == nil {
+			w.Input = NewInputState()
+		}
+		w.scripts = newScriptRuntime(w)
 	}
 	if sc.Map != "" {
 		if err := w.loadMap(sc); err != nil {
 			return nil, err
 		}
 	}
-	ents, err := w.expandNode(sc.Root, 0, 0, nil, 0, nil) // the root's own offset counts, as in WorldPos
+	ents, err := w.expandNode(sc.Root, 0, 0, nil, 0, nil, scope{}) // the root's own offset counts, as in WorldPos
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +143,7 @@ func (w *World) loadMap(sc *scene.Scene) error {
 	if m.TileSize != sc.TileSize {
 		return fmt.Errorf("map %s has tile_size %d but the scene has %d", sc.Map, m.TileSize, sc.TileSize)
 	}
+	w.mapDoc = m
 	w.Optimized = m.Optimization
 	for _, c := range m.Root.Children {
 		if c.Template {
@@ -122,12 +154,12 @@ func (w *World) loadMap(sc *scene.Scene) error {
 				return fmt.Errorf("map %s has more than %d chunks", sc.Map, MaxChunks)
 			}
 			k := ChunkKey{c.CX, c.CY}
-			w.chunks[k] = &chunkUnit{key: k, node: c}
+			w.chunks[k] = &chunkUnit{key: k, node: c, state: newChunkState(), ids: map[string]int{}}
 			w.order = append(w.order, k)
 			continue
 		}
 		// Free-form map: everything is loaded whole and stays.
-		ents, err := w.expandNode(c, 0, 0, nil, 0, nil)
+		ents, err := w.expandNode(c, 0, 0, nil, 0, nil, scope{})
 		if err != nil {
 			return fmt.Errorf("map %s: %w", sc.Map, err)
 		}
@@ -143,40 +175,85 @@ func (w *World) loadMap(sc *scene.Scene) error {
 // expandNode creates entities for n and its subtree, parents first, in
 // scene-tree order. (ox, oy) is the world position of n's parent. Templates
 // are skipped with their whole subtree. On error nothing is kept.
-func (w *World) expandNode(n *scene.Node, ox, oy int, parent *Entity, depth int, stack []string) ([]*Entity, error) {
+func (w *World) expandNode(n *scene.Node, ox, oy int, parent *Entity, depth int, stack []string, sc scope) ([]*Entity, error) {
 	var out []*Entity
-	if err := w.expand(n, ox, oy, parent, depth, stack, &out); err != nil {
-		w.live -= len(out)
+	if err := w.expand(n, ox, oy, parent, depth, stack, &out, sc); err != nil {
+		w.discard(out)
 		return nil, err
 	}
 	return out, nil
 }
 
-func (w *World) expand(n *scene.Node, ox, oy int, parent *Entity, depth int, stack []string, out *[]*Entity) error {
+// discard forgets entities that were created but are not kept (a failed
+// load): the live count and the id index are rolled back.
+func (w *World) discard(ents []*Entity) {
+	for _, e := range ents {
+		delete(w.byID, e.ID)
+	}
+	w.live -= len(ents)
+}
+
+// scope tells expand which chunk a node belongs to and where it sits in it:
+// path is the node's index path ("3/0/2"), the stable identity of the node.
+type scope struct {
+	unit *chunkUnit
+	path string
+}
+
+func (s scope) child(i int) scope {
+	if s.unit == nil {
+		return s
+	}
+	return scope{s.unit, s.path + "/" + strconv.Itoa(i)}
+}
+
+func (w *World) expand(n *scene.Node, ox, oy int, parent *Entity, depth int, stack []string, out *[]*Entity, sc scope) error {
 	if n.Template || n.Kind == scene.KindChunk {
 		return nil
+	}
+	if sc.unit != nil && sc.unit.state.Destroyed[sc.path] {
+		return nil // destroyed earlier: it does not come back with the chunk
 	}
 	if w.live >= MaxEntities {
 		return fmt.Errorf("more than %d entities", MaxEntities)
 	}
 	x, y := ox+n.X, oy+n.Y
 	e := &Entity{
-		Name: n.Name, Kind: n.Kind, X: x, Y: y, PrevX: x, PrevY: y,
-		Script: n.Script, Parent: parent,
+		Name: n.Name, Kind: n.Kind, X: float64(x), Y: float64(y), PrevX: float64(x), PrevY: float64(y),
+		Script: n.Script, Parent: parent, Visible: true,
 	}
 	if n.Tag != "" {
 		e.Tags = []string{n.Tag}
 	}
 	switch n.Kind {
 	case scene.KindSprite:
-		e.W, e.H, e.Color, e.Texture = n.W, n.H, n.Color, n.Texture
+		e.W, e.H, e.Color, e.Texture = float64(n.W), float64(n.H), n.Color, n.Texture
 	case scene.KindText:
-		e.W, e.H, e.Color, e.Text, e.FontSize = n.W, n.H, n.Color, n.Text, n.FontSize
+		e.W, e.H, e.Color, e.Text, e.FontSize = float64(n.W), float64(n.H), n.Color, n.Text, n.FontSize
 	}
-	w.nextID++
-	e.ID = w.nextID
+	e.fresh = true
+	if sc.unit != nil {
+		e.key, e.chunk = sc.path, sc.unit
+		if id := sc.unit.ids[sc.path]; id != 0 {
+			e.ID = id
+		} else {
+			w.nextID++
+			e.ID = w.nextID
+			sc.unit.ids[sc.path] = e.ID
+		}
+	} else {
+		w.nextID++
+		e.ID = w.nextID
+	}
+	if parent != nil {
+		parent.Children = append(parent.Children, e)
+	}
 	w.live++
+	w.byID[e.ID] = e
 	*out = append(*out, e)
+	if w.scripts != nil && e.Script != "" {
+		w.scripts.attach(e)
+	}
 	if w.opts.Attach != nil {
 		w.opts.Attach(e)
 	}
@@ -202,8 +279,8 @@ func (w *World) expand(n *scene.Node, ox, oy int, parent *Entity, depth int, sta
 		stack = append(stack[:len(stack):len(stack)], n.Ref)
 		depth++
 	}
-	for _, c := range children {
-		if err := w.expand(c, ox2, oy2, e, depth, stack, out); err != nil {
+	for i, c := range children {
+		if err := w.expand(c, ox2, oy2, e, depth, stack, out, sc.child(i)); err != nil {
 			return err
 		}
 	}
@@ -243,28 +320,42 @@ func (w *World) LoadChunk(cx, cy int) error {
 		return nil
 	}
 	var ents []*Entity
-	for _, c := range u.node.Children {
-		es, err := w.expandNode(c, u.node.X, u.node.Y, nil, 0, nil)
+	for i, c := range u.node.Children {
+		es, err := w.expandNode(c, u.node.X, u.node.Y, nil, 0, nil, scope{u, strconv.Itoa(i)})
 		if err != nil {
-			w.live -= len(ents)
+			w.discard(ents) // nothing of this chunk stays: live count and id index are rolled back
 			return fmt.Errorf("chunk %d,%d: %w", cx, cy, err)
 		}
 		ents = append(ents, es...)
 	}
 	u.ents, u.loaded = ents, true
+	u.state.restore(ents)
 	return nil
 }
 
-// UnloadChunk drops the entities of chunk (cx, cy). It reports whether the
-// chunk was loaded.
+// UnloadChunk drops the entities of chunk (cx, cy), first saving their state
+// in the chunk's ChunkState. It reports whether the chunk was loaded.
 func (w *World) UnloadChunk(cx, cy int) bool {
 	u := w.chunks[ChunkKey{cx, cy}]
 	if u == nil || !u.loaded {
 		return false
 	}
+	u.state.save(u.ents)
 	w.live -= len(u.ents)
+	for _, e := range u.ents {
+		delete(w.byID, e.ID)
+	}
 	u.ents, u.loaded = nil, false
 	return true
+}
+
+// ChunkState returns the remembered state of chunk (cx, cy), or nil if the
+// map has no such chunk. See ChunkState for what it holds.
+func (w *World) ChunkState(cx, cy int) *ChunkState {
+	if u := w.chunks[ChunkKey{cx, cy}]; u != nil {
+		return &u.state
+	}
+	return nil
 }
 
 // UpdateChunks applies the radius policy: chunks that touch the view grown by
@@ -324,7 +415,10 @@ func (w *World) Each(fn func(e *Entity)) {
 // Len is the number of live entities.
 func (w *World) Len() int { return w.live }
 
-// Step advances the simulation by exactly one fixed step.
+// Step advances the simulation by exactly one fixed step. The frame order is
+// the one of reference.md section 8: plain Behavior.Step of every entity, then
+// the phases (start, input, update, timers), each over all entities in
+// scene-tree order, then the destruction of entities that were destroyed.
 func (w *World) Step() error {
 	w.Tick++
 	w.Each(func(e *Entity) { e.PrevX, e.PrevY = e.X, e.Y })
@@ -334,8 +428,139 @@ func (w *World) Step() error {
 			steps = append(steps, e)
 		}
 	})
+	if w.scripts != nil {
+		w.scripts.beginFrame()
+	}
 	for _, e := range steps {
 		e.Behavior.Step(w, e)
 	}
+	for ph := PhaseStart; ph <= PhaseTimers; ph++ {
+		for _, e := range steps {
+			if p, ok := e.Behavior.(Phased); ok {
+				p.RunPhase(w, e, ph)
+			}
+		}
+	}
+	if w.scripts != nil {
+		w.scripts.endFrame()
+	}
+	w.Each(func(e *Entity) { e.fresh = false })
+	w.flushDestroyed()
+	if w.Input != nil {
+		w.Input.Advance()
+	}
 	return w.syncChunks()
 }
+
+// Destroy removes e and everything inside it (its descendants) from the world
+// at the end of the current step. Until then they are still alive, as
+// reference.md section 6 says.
+func (w *World) Destroy(e *Entity) {
+	if e == nil || e.Dead || e.pendingDestroy {
+		return
+	}
+	stack := []*Entity{e}
+	for len(stack) > 0 {
+		x := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if x.pendingDestroy || x.Dead {
+			continue
+		}
+		x.pendingDestroy = true
+		w.destroyQ = append(w.destroyQ, x)
+		stack = append(stack, x.Children...)
+	}
+}
+
+// Place puts e at world position (x, y) and moves all its descendants by the
+// same shift, so a group carries its members along. Unless teleport is set
+// (or e was created in this very step) the previous position is kept, so the
+// renderer glides from the old place to the new one; this is the same for
+// "x = ..." and "move to" in scripts.
+func (w *World) Place(e *Entity, x, y float64, teleport bool) {
+	dx, dy := float64(x-e.X), float64(y-e.Y)
+	tp := teleport || e.fresh
+	e.X, e.Y = x, y
+	if tp {
+		e.PrevX, e.PrevY = x, y
+	}
+	stack := append([]*Entity(nil), e.Children...)
+	for len(stack) > 0 {
+		c := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		c.X, c.Y = float64(c.X+dx), float64(c.Y+dy)
+		if tp {
+			c.PrevX, c.PrevY = c.X, c.Y
+		}
+		stack = append(stack, c.Children...)
+	}
+}
+
+// LocalPos is the position of e relative to its parent group, which is what
+// scripts see as x and y.
+func (e *Entity) LocalPos() (x, y float64) {
+	if e.Parent == nil {
+		return e.X, e.Y
+	}
+	return float64(e.X - e.Parent.X), float64(e.Y - e.Parent.Y)
+}
+
+// WorldFromLocal converts a position relative to e's parent group to world
+// coordinates.
+func (e *Entity) WorldFromLocal(x, y float64) (float64, float64) {
+	if e.Parent == nil {
+		return x, y
+	}
+	return float64(e.Parent.X + x), float64(e.Parent.Y + y)
+}
+
+func (w *World) flushDestroyed() {
+	if len(w.destroyQ) == 0 {
+		return
+	}
+	gone := make(map[*Entity]bool, len(w.destroyQ))
+	parents := map[*Entity]bool{}
+	for _, e := range w.destroyQ {
+		gone[e] = true
+		e.Dead = true
+		delete(w.byID, e.ID)
+		if e.chunk != nil {
+			e.chunk.state.Destroyed[e.key] = true
+			delete(e.chunk.state.Entities, e.key)
+		}
+		if e.Parent != nil && !e.Parent.pendingDestroy {
+			parents[e.Parent] = true
+		}
+	}
+	w.destroyQ = w.destroyQ[:0]
+	for p := range parents {
+		kids := p.Children[:0]
+		for _, c := range p.Children {
+			if !c.Dead {
+				kids = append(kids, c)
+			}
+		}
+		clear(p.Children[len(kids):])
+		p.Children = kids
+	}
+	drop := func(list []*Entity) []*Entity {
+		out := list[:0]
+		for _, e := range list {
+			if gone[e] {
+				w.live--
+				continue
+			}
+			out = append(out, e)
+		}
+		clear(list[len(out):])
+		return out
+	}
+	w.mapStatic = drop(w.mapStatic)
+	w.content = drop(w.content)
+	for _, u := range w.chunks {
+		u.ents = drop(u.ents)
+	}
+}
+
+// Entity returns the live entity with the given id, or nil.
+func (w *World) Entity(id int) *Entity { return w.byID[id] }

@@ -53,8 +53,12 @@ func (g *Game) Run() error {
 // Update runs the due simulation steps. Wall-clock time is read only here, at
 // the edge, and handed to the Clock as a duration.
 func (g *Game) Update() error {
-	if ebiten.IsKeyPressed(ebiten.KeyEscape) {
+	// Escape belongs to the scripts; Ctrl+Q (or closing the window) quits.
+	if ebiten.IsKeyPressed(ebiten.KeyControl) && ebiten.IsKeyPressed(ebiten.KeyQ) {
 		return ebiten.Termination
+	}
+	if in, ok := g.Sim.World.Input.(*InputState); ok {
+		pollKeys(in)
 	}
 	now := time.Now()
 	dt := time.Duration(0)
@@ -107,6 +111,9 @@ func (g *Game) drawWorld(dst *ebiten.Image, alpha float64) {
 		filter = ebiten.FilterNearest
 	}
 	w.Each(func(e *Entity) {
+		if !e.Visible {
+			return
+		}
 		x, y := e.Lerp(alpha)
 		x, y = x-float64(w.CamX), y-float64(w.CamY)
 		if pixel {
@@ -122,7 +129,7 @@ func (g *Game) drawWorld(dst *ebiten.Image, alpha float64) {
 }
 
 func (g *Game) drawSprite(dst *ebiten.Image, e *Entity, x, y float64, filter ebiten.Filter) {
-	if e.W < 1 || e.H < 1 {
+	if e.W <= 0 || e.H <= 0 {
 		return
 	}
 	col := e.Color
@@ -138,7 +145,7 @@ func (g *Game) drawSprite(dst *ebiten.Image, e *Entity, x, y float64, filter ebi
 		col = color.RGBA{0xff, 0x00, 0xff, 0xff} // missing texture
 	}
 	op := &ebiten.DrawImageOptions{}
-	op.GeoM.Scale(float64(e.W), float64(e.H))
+	op.GeoM.Scale(e.W, e.H) // a plain rectangle looks the same mirrored
 	op.GeoM.Translate(x, y)
 	op.ColorScale.ScaleWithColor(col)
 	dst.DrawImage(pixelImage(), op)
@@ -155,10 +162,11 @@ func pixelImage() *ebiten.Image {
 }
 
 func (g *Game) drawText(dst *ebiten.Image, e *Entity, x, y float64) {
-	f := g.faces[e.FontSize]
+	size := min(max(e.FontSize, 1), 256) // the cache key is the clamped size
+	f := g.faces[size]
 	if f == nil {
-		f = &text.GoTextFace{Source: g.face, Size: float64(min(max(e.FontSize, 1), 256))}
-		g.faces[e.FontSize] = f
+		f = &text.GoTextFace{Source: g.face, Size: float64(size)}
+		g.faces[size] = f
 	}
 	op := &text.DrawOptions{}
 	op.GeoM.Translate(x, y)

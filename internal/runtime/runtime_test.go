@@ -300,7 +300,7 @@ func TestClockAlphaAndCatchUp(t *testing.T) {
 	}
 }
 
-type mover struct{ dx int }
+type mover struct{ dx float64 }
 
 func (m mover) Step(_ *World, e *Entity) { e.SetPos(e.X+m.dx, e.Y) }
 
@@ -330,8 +330,8 @@ func TestSimDeterministicAcrossRates(t *testing.T) {
 				m = e
 			}
 		})
-		if int(w.Tick) != 5*rate || m.X != 5*rate || m.PrevX != m.X-1 {
-			t.Errorf("rate %d: tick=%d x=%d prev=%d", rate, w.Tick, m.X, m.PrevX)
+		if int(w.Tick) != 5*rate || m.X != float64(5*rate) || m.PrevX != m.X-1 {
+			t.Errorf("rate %d: tick=%d x=%v prev=%v", rate, w.Tick, m.X, m.PrevX)
 		}
 	}
 }
