@@ -31,11 +31,18 @@ type Info struct {
 
 // ValidPath reports whether p is a safe relative asset path: slash-separated,
 // local (no "..", not absolute), no backslashes, and a .png file.
-func ValidPath(p string) bool {
-	if p == "" || strings.ContainsAny(p, "\\\x00") || !strings.EqualFold(path.Ext(p), ".png") {
+func ValidPath(p string) bool { return ValidRelPath(p, ".png") }
+
+// ValidRelPath is like ValidPath for any of the given file extensions.
+func ValidRelPath(p string, exts ...string) bool {
+	if p == "" || strings.ContainsAny(p, "\\\x00") {
 		return false
 	}
-	return path.Clean(p) == p && filepath.IsLocal(filepath.FromSlash(p))
+	okExt := false
+	for _, e := range exts {
+		okExt = okExt || strings.EqualFold(path.Ext(p), e)
+	}
+	return okExt && path.Clean(p) == p && filepath.IsLocal(filepath.FromSlash(p))
 }
 
 // Scan lists the valid PNG assets under root, sorted by path. A missing root

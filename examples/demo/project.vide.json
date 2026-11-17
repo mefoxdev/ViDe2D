@@ -5,11 +5,83 @@
     "name": "Demo",
     "kind": "Node",
     "children": [
-      {"name": "grass", "kind": "Sprite", "x": 40, "y": 120, "w": 16, "h": 16, "color": "#5cc96b", "texture": "tiles/grass.png"},
-      {"name": "grass2", "kind": "Sprite", "x": 56, "y": 120, "w": 16, "h": 16, "color": "#5cc96b", "texture": "tiles/grass.png"},
-      {"name": "tree", "kind": "Sprite", "x": 200, "y": 96, "w": 16, "h": 20, "color": "#5cc96b", "texture": "tree.png"},
-      {"name": "hero", "kind": "Sprite", "x": 64, "y": 104, "w": 16, "h": 16, "color": "#4f9dff", "texture": "hero.png"},
-      {"name": "coin", "kind": "Sprite", "x": 120, "y": 100, "w": 8, "h": 8, "color": "#f0dc4a", "texture": "coin.png"}
+      {
+        "name": "grass",
+        "kind": "Sprite",
+        "x": 40,
+        "y": 120,
+        "w": 16,
+        "h": 16,
+        "color": "#5cc96b",
+        "texture": "tiles/grass.png"
+      },
+      {
+        "name": "grass2",
+        "kind": "Sprite",
+        "x": 56,
+        "y": 120,
+        "w": 16,
+        "h": 16,
+        "color": "#5cc96b",
+        "texture": "tiles/grass.png"
+      },
+      {
+        "name": "tree",
+        "kind": "Sprite",
+        "x": 200,
+        "y": 96,
+        "w": 16,
+        "h": 20,
+        "color": "#5cc96b",
+        "texture": "tree.png"
+      },
+      {
+        "name": "hero",
+        "kind": "Sprite",
+        "x": 64,
+        "y": 104,
+        "w": 16,
+        "h": 16,
+        "color": "#4f9dff",
+        "texture": "hero.png",
+        "tag": "player",
+        "script": "hero.tdsl"
+      },
+      {
+        "name": "coin",
+        "kind": "Sprite",
+        "x": 120,
+        "y": 100,
+        "w": 8,
+        "h": 8,
+        "color": "#f0dc4a",
+        "texture": "coin.png",
+        "tag": "coin"
+      },
+      {
+        "name": "Score",
+        "kind": "Text",
+        "x": 6,
+        "y": 6,
+        "w": 120,
+        "h": 14,
+        "color": "#e2e5ec",
+        "text": "Coins: 0 of 1",
+        "font_size": 10,
+        "script": "score.tdsl"
+      },
+      {
+        "name": "Star",
+        "kind": "Sprite",
+        "x": 260,
+        "y": 20,
+        "w": 8,
+        "h": 8,
+        "color": "#f0dc4a",
+        "texture": "coin.png",
+        "tag": "danger",
+        "template": true
+      }
     ]
   }
 }

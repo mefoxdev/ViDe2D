@@ -17,6 +17,12 @@ func sample() *scene.Scene {
 	h.Color.R, h.Color.G, h.Color.B = 0x12, 0xab, 0xff
 	h.Texture = "chars/hero.png"
 	s.ImageMode = scene.ImageNormal
+	h.Tag, h.Script = "player", "hero.tdsl"
+	s.Root.Script = "game.tdsl"
+	tpl := s.Add(nil, scene.KindSprite, "Star")
+	tpl.Template, tpl.Tag = true, "danger"
+	lbl := s.Add(nil, scene.KindText, "Score")
+	lbl.Text, lbl.FontSize = "Score: {score}", 12
 	return s
 }
 
@@ -36,6 +42,21 @@ func TestRoundTrip(t *testing.T) {
 	h := s.Root.Children[0].Children[0]
 	if s.ImageMode != scene.ImageNormal || h.Texture != "chars/hero.png" {
 		t.Fatalf("texture/mode lost: %+v %q", h, s.ImageMode)
+	}
+	if h.Tag != "player" || h.Script != "hero.tdsl" || s.Root.Script != "game.tdsl" {
+		t.Fatalf("meta lost: %+v", h)
+	}
+	var star, score *scene.Node
+	s.Root.Walk(func(n *scene.Node, _ int) {
+		switch n.Name {
+		case "Star":
+			star = n
+		case "Score":
+			score = n
+		}
+	})
+	if star == nil || !star.Template || score == nil || score.Text != "Score: {score}" || score.FontSize != 12 || score.W != 100 {
+		t.Fatalf("template/text lost: %+v %+v", star, score)
 	}
 	if h.Name != "Hero" || h.W != 16 || h.Color.G != 0xab {
 		t.Fatalf("bad hero: %+v", h)
@@ -68,6 +89,14 @@ func TestBadFiles(t *testing.T) {
 		"tex abs":       `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":4,"h":4,"texture":"/etc/passwd"}]}}`,
 		"tex up":        `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":4,"h":4,"texture":"../secret.png"}]}}`,
 		"tex backslash": `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":4,"h":4,"texture":"a\\b.png"}]}}`,
+		"script bad":    `{"version":1,"scene":{"name":"M","kind":"Node","script":"../x.tdsl"}}`,
+		"script ext":    `{"version":1,"scene":{"name":"M","kind":"Node","script":"x.png"}}`,
+		"root template": `{"version":1,"scene":{"name":"M","kind":"Node","template":true}}`,
+		"tag long":      `{"version":1,"scene":{"name":"M","kind":"Node","tag":"` + strings.Repeat("a", 65) + `"}}`,
+		"tag control":   `{"version":1,"scene":{"name":"M","kind":"Node","tag":"a\u0007b"}}`,
+		"font size":     `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"T","kind":"Text","w":5,"h":5,"font_size":999}]}}`,
+		"text size":     `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"T","kind":"Text","w":0,"h":5}]}}`,
+		"text texture":  `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"T","kind":"Text","w":5,"h":5,"texture":"a.png"}]}}`,
 		"too deep":      deep(100),
 		"truncated":     `{"version":1,"scene":{"name":"M"`,
 	}

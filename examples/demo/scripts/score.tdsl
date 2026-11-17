@@ -1,0 +1,12 @@
+# score.tdsl — counts collected coins
+
+shared coins = 0
+
+when start
+  text = "Coins: 0 of 1"
+
+when message "coin collected"
+  coins += 1
+  text = "Coins: {coins} of 1"
+  if coins is 1
+    send "win"

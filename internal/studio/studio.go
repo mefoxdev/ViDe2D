@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 
+	"github.com/vide2d/vide-studio/internal/assets"
 	"github.com/vide2d/vide-studio/internal/dock"
 	"github.com/vide2d/vide-studio/internal/project"
 	"github.com/vide2d/vide-studio/internal/scene"
@@ -49,6 +51,8 @@ const (
 // blueprintNodeSize is the box size used for objects without a size of their own.
 const blueprintNodeSize = 32
 
+var templateColor = color.RGBA{0xff, 0x9f, 0x43, 0xff}
+
 // Studio implements ebiten.Game.
 type Studio struct {
 	ui    *ui.Context
@@ -70,6 +74,7 @@ type Studio struct {
 	mode       ViewMode
 	dock       *dock.Dock
 	tex        *textures
+	scriptsDir string
 	assets     assetState
 	vp         image.Rectangle // viewport content rect from the last frame
 
@@ -87,6 +92,7 @@ func New(path string) *Studio {
 	s := &Studio{ui: ui.New(), zoom: 2, path: path}
 	s.dock = dock.New(loadLayout(), panelTitles)
 	s.assets.dir = assetsDirFor(path)
+	s.scriptsDir = scriptsDirFor(path)
 	s.tex = newTextures(s.assets.dir)
 	loaded := false
 	if path != "" {
@@ -253,6 +259,12 @@ func (s *Studio) toolbar(r image.Rectangle) {
 		s.sel = n
 		s.Logf("Added %s", n.Name)
 	}
+	if btn("+ Text", 70, true) {
+		n := s.scene.Add(parent, scene.KindText, "Text")
+		n.X, n.Y = 16, 16
+		s.sel = n
+		s.Logf("Added %s", n.Name)
+	}
 	if btn("Delete", 70, s.sel != nil && s.sel.Parent != nil) {
 		name := s.sel.Name
 		p := s.sel.Parent
@@ -342,10 +354,13 @@ func (s *Studio) treePanel(r image.Rectangle) {
 			u.Fill(vis, u.Theme.PanelHead)
 		}
 		icon := "◦"
-		if n.Kind == scene.KindSprite {
+		switch n.Kind {
+		case scene.KindSprite:
 			icon = "■"
+		case scene.KindText:
+			icon = "T"
 		}
-		label := fmt.Sprintf("%s %s", icon, n.Name)
+		label := fmt.Sprintf("%s %s%s", icon, n.Name, marks(n))
 		tr := image.Rect(row.Min.X+8+depth*16, row.Min.Y, row.Max.X, row.Max.Y)
 		s.clippedText(clip, tr, label, u.Theme.Text)
 	})
@@ -385,7 +400,16 @@ func (s *Studio) inspector(r image.Rectangle) {
 	}
 	s.stepper(n.ID, line(), "X", &n.X, step)
 	s.stepper(n.ID, line(), "Y", &n.Y, step)
-	if n.Kind == scene.KindSprite {
+	if n.Kind == scene.KindText {
+		fr := line()
+		u.Text(image.Rect(fr.Min.X, fr.Min.Y, fr.Min.X+60, fr.Max.Y), "Text", u.Theme.TextDim)
+		if v, ok := u.Field(fmt.Sprintf("text%d", n.ID), image.Rect(fr.Min.X+62, fr.Min.Y, fr.Max.X, fr.Max.Y), n.Text, false); ok && len([]rune(v)) <= 10000 {
+			n.Text = v
+		}
+		s.stepper(n.ID, line(), "Font", &n.FontSize, 1)
+		n.FontSize = min(max(n.FontSize, 1), 256)
+	}
+	if n.HasBox() {
 		s.stepper(n.ID, line(), "Width", &n.W, step)
 		s.stepper(n.ID, line(), "Height", &n.H, step)
 		n.W, n.H = max(n.W, 1), max(n.H, 1)
@@ -416,6 +440,64 @@ func (s *Studio) inspector(r image.Rectangle) {
 			}
 		}
 		u.Text(image.Rect(tr.Min.X+62, tr.Min.Y, tr.Max.X-28, tr.Max.Y), u.FitText(val, float64(tr.Dx()-92)), col)
+	}
+
+	// scripting
+	y += 6
+	tg := line()
+	u.Text(image.Rect(tg.Min.X, tg.Min.Y, tg.Min.X+60, tg.Max.Y), "Tag", u.Theme.TextDim)
+	if v, ok := u.Field(fmt.Sprintf("tag%d", n.ID), image.Rect(tg.Min.X+62, tg.Min.Y, tg.Max.X, tg.Max.Y), n.Tag, false); ok {
+		if v = strings.TrimSpace(v); validTag(v) {
+			n.Tag = v
+		} else {
+			s.Logf("Tags can have at most 64 characters and no control characters.")
+		}
+	}
+	sr := line()
+	u.Text(image.Rect(sr.Min.X, sr.Min.Y, sr.Min.X+60, sr.Max.Y), "Script", u.Theme.TextDim)
+	if v, ok := u.Field(fmt.Sprintf("script%d", n.ID), image.Rect(sr.Min.X+62, sr.Min.Y, sr.Max.X, sr.Max.Y), n.Script, false); ok {
+		if v = strings.TrimSpace(v); v == "" || assets.ValidRelPath(v, scriptExt) {
+			n.Script = v
+		} else {
+			s.Logf("Script path must be like \"hero.tdsl\" or \"enemies/slime.tdsl\" (inside the scripts folder).")
+		}
+	}
+	br := line()
+	bx := br.Max.X
+	sbtn := func(label string, w int, enabled bool) bool {
+		bx -= w
+		b := image.Rect(bx, br.Min.Y, bx+w, br.Max.Y)
+		bx -= 6
+		return u.Button(b, label, enabled)
+	}
+	if sbtn("Clear", 56, n.Script != "") {
+		n.Script = ""
+	}
+	if sbtn("Open", 56, n.Script != "" && s.scriptExists(n.Script)) {
+		if err := s.openScript(n.Script); err != nil {
+			s.Logf("Cannot open script: %v", err)
+		}
+	}
+	if sbtn("New", 56, n.Script == "") {
+		if err := s.newScript(n); err != nil {
+			s.Logf("Cannot create script: %v", err)
+		} else {
+			s.Logf("Created scripts/%s for %s", n.Script, n.Name)
+		}
+	}
+	if n.Script != "" && !s.scriptExists(n.Script) {
+		u.Text(image.Rect(br.Min.X, br.Min.Y, bx, br.Max.Y), "missing file", color.RGBA{0xff, 0x6b, 0x6b, 0xff})
+	}
+	if n.Parent != nil {
+		tr := line()
+		u.Text(image.Rect(tr.Min.X, tr.Min.Y, tr.Min.X+70, tr.Max.Y), "Template", u.Theme.TextDim)
+		label := "no"
+		if n.Template {
+			label = "yes"
+		}
+		if u.Toggle(image.Rect(tr.Max.X-56, tr.Min.Y, tr.Max.X, tr.Max.Y), label, n.Template) {
+			n.Template = !n.Template
+		}
 	}
 	y += 6
 	u.Text(line(), "Shift: step 8 • Enter: apply", u.Theme.TextDim)
@@ -558,7 +640,7 @@ func (s *Studio) viewport(r image.Rectangle) {
 // current mode. Plain nodes have no size in 2D mode.
 func (s *Studio) boxSize(n *scene.Node) (w, h int) {
 	switch {
-	case n.Kind == scene.KindSprite:
+	case n.HasBox():
 		return n.W, n.H
 	case s.mode == ModeBlueprint:
 		return blueprintNodeSize, blueprintNodeSize
@@ -596,7 +678,17 @@ func (s *Studio) drawViewport(d *ebiten.Image, r image.Rectangle, ox, oy, z int,
 	s.ui.DrawText(d, fmt.Sprintf("game %dx%d", gameW, gameH), float64(game.Min.X+4), float64(game.Min.Y-20), t.TextDim)
 
 	for _, it := range items {
-		if it.n.Kind == scene.KindSprite {
+		if it.n.Kind == scene.KindText {
+			if clip := it.r.Intersect(r); !clip.Empty() {
+				size := float64(it.n.FontSize * z)
+				s.ui.DrawTextSize(d.SubImage(clip).(*ebiten.Image), it.n.Text, float64(it.r.Min.X), float64(it.r.Min.Y), size, it.n.Color)
+			}
+			ui.StrokeRect(d, it.r, color.RGBA{0x4a, 0x4f, 0x5c, 0xff})
+			if it.selected {
+				ui.StrokeRect(d, it.r.Inset(-2), t.Accent)
+			}
+			s.ui.DrawText(d, it.n.Name+marks(it.n), float64(it.r.Min.X), float64(it.r.Min.Y-18), t.TextDim)
+		} else if it.n.Kind == scene.KindSprite {
 			switch {
 			case it.img != nil:
 				drawImage(d, it.img, it.r, s.scene.ImageMode)
@@ -608,7 +700,7 @@ func (s *Studio) drawViewport(d *ebiten.Image, r image.Rectangle, ox, oy, z int,
 			if it.selected {
 				ui.StrokeRect(d, it.r.Inset(-2), t.Accent)
 			}
-			s.ui.DrawText(d, it.n.Name, float64(it.r.Min.X), float64(it.r.Min.Y-18), t.TextDim)
+			s.ui.DrawText(d, it.n.Name+marks(it.n), float64(it.r.Min.X), float64(it.r.Min.Y-18), t.TextDim)
 		} else {
 			p := it.r.Min
 			ui.FillRect(d, image.Rect(p.X-5, p.Y, p.X+6, p.Y+1), t.TextDim)
@@ -616,6 +708,11 @@ func (s *Studio) drawViewport(d *ebiten.Image, r image.Rectangle, ox, oy, z int,
 			if it.selected {
 				ui.StrokeRect(d, image.Rect(p.X-7, p.Y-7, p.X+8, p.Y+8), t.Accent)
 			}
+		}
+	}
+	for _, it := range items {
+		if it.n.Template && it.n.HasBox() {
+			ui.StrokeRect(d, it.r.Inset(-4), templateColor)
 		}
 	}
 	s.ui.DrawText(d, fmt.Sprintf("zoom %dx", z), float64(r.Min.X+8), float64(r.Max.Y-22), t.TextDim)
@@ -672,13 +769,16 @@ func (s *Studio) drawBlueprint(d *ebiten.Image, r image.Rectangle, ox, oy, z int
 			ui.StrokeRect(d, box, bpSel)
 		}
 		size := "node"
-		if it.n.Kind == scene.KindSprite {
+		if it.n.HasBox() {
 			size = fmt.Sprintf("%d×%d", it.n.W, it.n.H)
+		}
+		if it.n.Template {
+			ui.StrokeRect(d, box.Inset(-2), templateColor)
 		}
 		lines := []struct {
 			text string
 			col  color.RGBA
-		}{{it.n.Name, bpText}, {fmt.Sprintf("#%d", it.n.ID), bpDim}, {size, bpDim}}
+		}{{it.n.Name + marks(it.n), bpText}, {fmt.Sprintf("#%d", it.n.ID), bpDim}, {size, bpDim}}
 
 		inner := box.Inset(2)
 		fit := min(len(lines), max(inner.Dy()/bpLineH, 0))

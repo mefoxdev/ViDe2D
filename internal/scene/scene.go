@@ -13,6 +13,7 @@ type Kind string
 const (
 	KindNode   Kind = "Node"
 	KindSprite Kind = "Sprite"
+	KindText   Kind = "Text"
 )
 
 // ImageMode controls how images are displayed.
@@ -35,6 +36,11 @@ type Node struct {
 	W, H     int // size in pixels; used by sprites
 	Color    color.RGBA
 	Texture  string // sprite image: slash-separated path relative to the assets folder
+	Tag      string // group label used by scripts (touch "coin")
+	Script   string // TrueDSL script: slash-separated path relative to the scripts folder
+	Template bool   // a prototype for `spawn`; not part of the running scene
+	Text     string // Text nodes: the label shown
+	FontSize int    // Text nodes: font size in pixels
 	Parent   *Node
 	Children []*Node
 }
@@ -64,8 +70,13 @@ func (s *Scene) Add(parent *Node, kind Kind, name string) *Node {
 		parent = s.Root
 	}
 	n := s.newNode(kind, uniqueName(parent, name))
-	if kind == KindSprite {
+	switch kind {
+	case KindSprite:
 		n.W, n.H = 16, 16
+	case KindText:
+		n.W, n.H = 100, 14
+		n.Text, n.FontSize = "Text", 10
+		n.Color = color.RGBA{0xe2, 0xe5, 0xec, 0xff}
 	}
 	n.Parent = parent
 	parent.Children = append(parent.Children, n)
@@ -118,6 +129,9 @@ func uniqueName(parent *Node, base string) string {
 		}
 	}
 }
+
+// HasBox reports whether the node has its own width and height.
+func (n *Node) HasBox() bool { return n.Kind == KindSprite || n.Kind == KindText }
 
 // WorldPos returns the node's position in scene coordinates.
 func (n *Node) WorldPos() (x, y int) {

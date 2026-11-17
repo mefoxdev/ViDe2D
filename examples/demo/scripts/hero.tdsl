@@ -1,0 +1,22 @@
+# hero.tdsl — the player
+
+var speed = 80
+
+when key left held
+  move left by speed per second
+  flip = yes
+
+when key right held
+  move right by speed per second
+  flip = no
+
+when key up held
+  move up by speed per second
+
+when key down held
+  move down by speed per second
+
+when touch "coin"
+  destroy other
+  play sound "coin.wav"
+  send "coin collected"

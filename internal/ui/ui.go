@@ -47,6 +47,7 @@ const (
 type Context struct {
 	Theme Theme
 	face  *text.GoTextFace
+	sized map[float64]*text.GoTextFace
 
 	MX, MY, DX, DY            int
 	Down, Pressed             bool // left button
@@ -70,7 +71,7 @@ func New() *Context {
 	if err != nil {
 		log.Fatal(err)
 	}
-	return &Context{Theme: DarkTheme(), face: &text.GoTextFace{Source: src, Size: FontSize}}
+	return &Context{Theme: DarkTheme(), face: &text.GoTextFace{Source: src, Size: FontSize}, sized: map[float64]*text.GoTextFace{}}
 }
 
 // Begin polls input and clears the command list. Call at the start of Update.
@@ -134,6 +135,23 @@ func (c *Context) DrawText(dst *ebiten.Image, s string, x, y float64, col color.
 	op.GeoM.Translate(x, y)
 	op.ColorScale.ScaleWithColor(col)
 	text.Draw(dst, s, c.face, op)
+}
+
+// DrawTextSize draws s at the given font size with its top-left at (x, y).
+func (c *Context) DrawTextSize(dst *ebiten.Image, s string, x, y, size float64, col color.RGBA) {
+	if size < 1 {
+		return
+	}
+	size = min(size, 512)
+	f, ok := c.sized[size]
+	if !ok {
+		f = &text.GoTextFace{Source: c.face.Source, Size: size}
+		c.sized[size] = f
+	}
+	op := &text.DrawOptions{}
+	op.GeoM.Translate(x, y)
+	op.ColorScale.ScaleWithColor(col)
+	text.Draw(dst, s, f, op)
 }
 
 // TextWidth returns the pixel width of s.

@@ -10,6 +10,9 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/vide2d/vide-studio/internal/assets"
 	"github.com/vide2d/vide-studio/internal/scene"
@@ -21,6 +24,8 @@ const Version = 1
 const (
 	maxDepth = 64
 	maxNodes = 100_000
+	maxText  = 10_000
+	maxTag   = 64
 )
 
 type file struct {
@@ -38,6 +43,11 @@ type node struct {
 	H        int     `json:"h,omitempty"`
 	Color    string  `json:"color,omitempty"`
 	Texture  string  `json:"texture,omitempty"`
+	Tag      string  `json:"tag,omitempty"`
+	Script   string  `json:"script,omitempty"`
+	Template bool    `json:"template,omitempty"`
+	Text     string  `json:"text,omitempty"`
+	FontSize int     `json:"font_size,omitempty"`
 	Children []*node `json:"children,omitempty"`
 }
 
@@ -48,7 +58,11 @@ func Marshal(s *scene.Scene) ([]byte, error) {
 
 func toNode(n *scene.Node) *node {
 	o := &node{Name: n.Name, Kind: string(n.Kind), X: n.X, Y: n.Y}
-	if n.Kind == scene.KindSprite {
+	o.Tag, o.Script, o.Template = n.Tag, n.Script, n.Template
+	if n.Kind == scene.KindText {
+		o.Text, o.FontSize = n.Text, n.FontSize
+	}
+	if n.HasBox() {
 		o.W, o.H = n.W, n.H
 		o.Texture = n.Texture
 		o.Color = fmt.Sprintf("#%02x%02x%02x", n.Color.R, n.Color.G, n.Color.B)
@@ -85,6 +99,12 @@ func Unmarshal(data []byte) (*scene.Scene, error) {
 	count := 1
 	root := f.Scene
 	s.Root.X, s.Root.Y = root.X, root.Y
+	if root.Template {
+		return nil, errors.New("invalid project file: the scene root cannot be a template")
+	}
+	if err := applyMeta(s.Root, root); err != nil {
+		return nil, err
+	}
 	if err := build(s, s.Root, root.Children, 1, &count); err != nil {
 		return nil, err
 	}
@@ -103,7 +123,7 @@ func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *i
 			return errors.New("invalid project file: too many nodes")
 		}
 		kind := scene.Kind(k.Kind)
-		if kind != scene.KindNode && kind != scene.KindSprite {
+		if kind != scene.KindNode && kind != scene.KindSprite && kind != scene.KindText {
 			return fmt.Errorf("invalid project file: unknown node kind %q", k.Kind)
 		}
 		if k.Name == "" {
@@ -111,11 +131,30 @@ func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *i
 		}
 		n := s.Add(parent, kind, k.Name)
 		n.X, n.Y = k.X, k.Y
-		if kind == scene.KindSprite {
+		if err := applyMeta(n, k); err != nil {
+			return err
+		}
+		if kind == scene.KindText {
+			if utf8.RuneCountInString(k.Text) > maxText {
+				return fmt.Errorf("invalid project file: text of %q is too long", k.Name)
+			}
+			n.Text = k.Text
+			if k.FontSize == 0 {
+				k.FontSize = 10
+			}
+			if k.FontSize < 1 || k.FontSize > 256 {
+				return fmt.Errorf("invalid project file: text %q has a bad font_size", k.Name)
+			}
+			n.FontSize = k.FontSize
+		}
+		if kind != scene.KindNode {
 			if k.W < 1 || k.H < 1 {
-				return fmt.Errorf("invalid project file: sprite %q has a non-positive size", k.Name)
+				return fmt.Errorf("invalid project file: %q has a non-positive size", k.Name)
 			}
 			n.W, n.H = k.W, k.H
+			if k.Texture != "" && kind != scene.KindSprite {
+				return fmt.Errorf("invalid project file: %q: only sprites have textures", k.Name)
+			}
 			if k.Texture != "" {
 				if !assets.ValidPath(k.Texture) {
 					return fmt.Errorf("invalid project file: sprite %q: bad texture path %q", k.Name, k.Texture)
@@ -134,6 +173,18 @@ func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *i
 			return err
 		}
 	}
+	return nil
+}
+
+// applyMeta validates and copies the tag, script and template fields.
+func applyMeta(n *scene.Node, k *node) error {
+	if utf8.RuneCountInString(k.Tag) > maxTag || strings.ContainsFunc(k.Tag, unicode.IsControl) {
+		return fmt.Errorf("invalid project file: %q has a bad tag", k.Name)
+	}
+	if k.Script != "" && !assets.ValidRelPath(k.Script, ".tdsl") {
+		return fmt.Errorf("invalid project file: %q has a bad script path %q", k.Name, k.Script)
+	}
+	n.Tag, n.Script, n.Template = k.Tag, k.Script, k.Template
 	return nil
 }
 
