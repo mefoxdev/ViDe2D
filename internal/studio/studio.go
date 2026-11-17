@@ -37,6 +37,19 @@ var palette = []color.RGBA{
 	{0xe0, 0x6b, 0xc4, 0xff}, {0xe2, 0xe5, 0xec, 0xff},
 }
 
+// ViewMode selects how the viewport shows the scene.
+type ViewMode int
+
+const (
+	// Mode2D shows sprites as they will look in the game.
+	Mode2D ViewMode = iota
+	// ModeBlueprint shows every object as a labelled box with its size.
+	ModeBlueprint
+)
+
+// blueprintNodeSize is the box size used for objects without a size of their own.
+const blueprintNodeSize = 32
+
 // Studio implements ebiten.Game.
 type Studio struct {
 	ui    *ui.Context
@@ -55,6 +68,7 @@ type Studio struct {
 	grabX, grabY     int
 
 	treeScroll int
+	mode       ViewMode
 
 	path  string // project file; empty disables saving
 	saved []byte // serialized scene as last saved/loaded
@@ -93,7 +107,7 @@ func New(path string) *Studio {
 	if data, err := project.Marshal(s.scene); err == nil && loaded {
 		s.saved = data
 	}
-	s.Logf("Middle mouse / Space+drag: pan, wheel: zoom, drag objects to move, F: center view.")
+	s.Logf("Middle mouse / Space+drag: pan, wheel: zoom, drag objects to move, F: center view, Tab: 2D/Blueprint.")
 	return s
 }
 
@@ -183,6 +197,9 @@ func (s *Studio) Update() error {
 	s.treePanel(left)
 	s.inspector(right)
 	s.console(bottom)
+	if inpututil.IsKeyJustPressed(ebiten.KeyTab) && !u.Focused() {
+		s.mode = 1 - s.mode
+	}
 	if ebiten.IsKeyPressed(ebiten.KeyControl) && inpututil.IsKeyJustPressed(ebiten.KeyS) && !u.Focused() {
 		s.save()
 	}
@@ -222,6 +239,21 @@ func (s *Studio) toolbar(r image.Rectangle) {
 		s.Logf("Deleted %s", name)
 	}
 	x += 20
+	for _, m := range []struct {
+		label string
+		mode  ViewMode
+	}{{"2D", Mode2D}, {"Blueprint", ModeBlueprint}} {
+		w := 70
+		if m.mode == ModeBlueprint {
+			w = 90
+		}
+		b := image.Rect(x, r.Min.Y+6, x+w, r.Max.Y-6)
+		x += w + 6
+		if u.Toggle(b, m.label, s.mode == m.mode) {
+			s.mode = m.mode
+		}
+	}
+	x += 14
 	if btn("Save", 70, s.path != "") {
 		s.save()
 	}
@@ -436,30 +468,41 @@ func (s *Studio) viewport(r image.Rectangle) {
 	z := s.zoom
 	s.scene.Root.Walk(func(n *scene.Node, _ int) {
 		x, y := n.WorldPos()
-		w, h := n.W, n.H
-		if n.Kind != scene.KindSprite {
-			w, h = 0, 0
-		}
+		w, h := s.boxSize(n)
 		items = append(items, item{
 			r: image.Rect(int(s.originX)+x*z, int(s.originY)+y*z, int(s.originX)+(x+w)*z, int(s.originY)+(y+h)*z),
 			n: n, selected: n == s.sel,
 		})
 	})
-	ox, oy := int(s.originX), int(s.originY)
+	ox, oy, mode := int(s.originX), int(s.originY), s.mode
 	u.Emit(func(d *ebiten.Image) {
 		sub := d.SubImage(r).(*ebiten.Image)
-		s.drawViewport(sub, r, ox, oy, z, items)
+		if mode == ModeBlueprint {
+			s.drawBlueprint(sub, r, ox, oy, z, items)
+		} else {
+			s.drawViewport(sub, r, ox, oy, z, items)
+		}
 	})
+}
+
+// boxSize is the world-space size used for hit-testing and drawing n in the
+// current mode. Plain nodes have no size in 2D mode.
+func (s *Studio) boxSize(n *scene.Node) (w, h int) {
+	switch {
+	case n.Kind == scene.KindSprite:
+		return n.W, n.H
+	case s.mode == ModeBlueprint:
+		return blueprintNodeSize, blueprintNodeSize
+	}
+	return 0, 0
 }
 
 func (s *Studio) hit(wx, wy int) *scene.Node {
 	var found *scene.Node
 	s.scene.Root.Walk(func(n *scene.Node, _ int) {
-		if n.Kind != scene.KindSprite {
-			return
-		}
+		w, h := s.boxSize(n)
 		x, y := n.WorldPos()
-		if wx >= x && wx < x+n.W && wy >= y && wy < y+n.H {
+		if wx >= x && wx < x+w && wy >= y && wy < y+h {
 			found = n // later in draw order = on top
 		}
 	})
@@ -500,4 +543,86 @@ func (s *Studio) drawViewport(d *ebiten.Image, r image.Rectangle, ox, oy, z int,
 		}
 	}
 	s.ui.DrawText(d, fmt.Sprintf("zoom %dx", z), float64(r.Min.X+8), float64(r.Max.Y-22), t.TextDim)
+}
+
+var (
+	bpBg      = color.RGBA{0x0e, 0x22, 0x38, 0xff}
+	bpGrid    = color.RGBA{0x14, 0x32, 0x52, 0xff}
+	bpGridMaj = color.RGBA{0x1b, 0x42, 0x6b, 0xff}
+	bpFill    = color.RGBA{0x12, 0x36, 0x5c, 0xff}
+	bpLine    = color.RGBA{0x5f, 0xb0, 0xff, 0xff}
+	bpSel     = color.RGBA{0xff, 0xff, 0xff, 0xff}
+	bpText    = color.RGBA{0xcf, 0xe6, 0xff, 0xff}
+	bpDim     = color.RGBA{0x7f, 0xa8, 0xd4, 0xff}
+)
+
+const bpLineH = 16
+
+// drawBlueprint draws every object as a box: name, id and size inside it.
+func (s *Studio) drawBlueprint(d *ebiten.Image, r image.Rectangle, ox, oy, z int, items []item) {
+	u := s.ui
+	ui.FillRect(d, r, bpBg)
+	step := gridStep * z
+	// grid; every 4th line is brighter, aligned to the world origin
+	i0 := -((ox - r.Min.X) / step) - 1
+	for i, x := i0, ox+i0*step; x < r.Max.X; i, x = i+1, x+step {
+		col := bpGrid
+		if i%4 == 0 {
+			col = bpGridMaj
+		}
+		ui.FillRect(d, image.Rect(x, r.Min.Y, x+1, r.Max.Y), col)
+	}
+	j0 := -((oy - r.Min.Y) / step) - 1
+	for j, y := j0, oy+j0*step; y < r.Max.Y; j, y = j+1, y+step {
+		col := bpGrid
+		if j%4 == 0 {
+			col = bpGridMaj
+		}
+		ui.FillRect(d, image.Rect(r.Min.X, y, r.Max.X, y+1), col)
+	}
+	game := image.Rect(ox, oy, ox+gameW*z, oy+gameH*z)
+	ui.StrokeRect(d, game, bpDim)
+	u.DrawText(d, fmt.Sprintf("game %dx%d", gameW, gameH), float64(game.Min.X+4), float64(game.Min.Y-20), bpDim)
+
+	for _, it := range items {
+		box := it.r
+		if box.Dx() < 1 || box.Dy() < 1 || !box.Overlaps(r) {
+			continue
+		}
+		ui.FillRect(d, box, bpFill)
+		ui.StrokeRect(d, box, bpLine)
+		if it.selected {
+			ui.StrokeRect(d, box.Inset(-1), bpSel)
+			ui.StrokeRect(d, box, bpSel)
+		}
+		size := "node"
+		if it.n.Kind == scene.KindSprite {
+			size = fmt.Sprintf("%d×%d", it.n.W, it.n.H)
+		}
+		lines := []struct {
+			text string
+			col  color.RGBA
+		}{{it.n.Name, bpText}, {fmt.Sprintf("#%d", it.n.ID), bpDim}, {size, bpDim}}
+
+		inner := box.Inset(2)
+		fit := min(len(lines), max(inner.Dy()/bpLineH, 0))
+		if fit == 0 {
+			continue
+		}
+		clip := inner.Intersect(r)
+		if clip.Empty() {
+			continue
+		}
+		sub := d.SubImage(clip).(*ebiten.Image)
+		y := float64(inner.Min.Y) + float64(inner.Dy()-fit*bpLineH)/2
+		for _, l := range lines[:fit] {
+			t := u.FitText(l.text, float64(inner.Dx()))
+			if t != "" {
+				x := float64(inner.Min.X) + (float64(inner.Dx())-u.TextWidth(t))/2
+				u.DrawText(sub, t, x, y, l.col)
+			}
+			y += bpLineH
+		}
+	}
+	u.DrawText(d, fmt.Sprintf("blueprint  zoom %dx", z), float64(r.Min.X+8), float64(r.Max.Y-22), bpDim)
 }

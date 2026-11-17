@@ -163,10 +163,37 @@ func (c *Context) Panel(r image.Rectangle, title string) image.Rectangle {
 
 // Button draws a button and reports whether it was clicked this frame.
 func (c *Context) Button(r image.Rectangle, label string, enabled bool) bool {
+	return c.button(r, label, enabled, false)
+}
+
+// Toggle draws a button that is highlighted while active; it reports clicks.
+func (c *Context) Toggle(r image.Rectangle, label string, active bool) bool {
+	return c.button(r, label, true, active)
+}
+
+// FitText shortens s with an ellipsis so it is at most maxW pixels wide.
+// It returns "" if not even one character fits.
+func (c *Context) FitText(s string, maxW float64) string {
+	if c.TextWidth(s) <= maxW {
+		return s
+	}
+	rs := []rune(s)
+	for n := len(rs) - 1; n > 0; n-- {
+		if t := string(rs[:n]) + "…"; c.TextWidth(t) <= maxW {
+			return t
+		}
+	}
+	return ""
+}
+
+func (c *Context) button(r image.Rectangle, label string, enabled, active bool) bool {
 	hover := enabled && c.Hover(r)
 	col, tcol := c.Theme.Button, c.Theme.Text
 	if hover {
 		col = c.Theme.ButtonHover
+	}
+	if active {
+		col = color.RGBA{0x2f, 0x5f, 0x9e, 0xff}
 	}
 	if !enabled {
 		tcol = c.Theme.TextDim
