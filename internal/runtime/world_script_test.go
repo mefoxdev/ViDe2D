@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // spec describes one object of a test scene.
@@ -899,6 +900,8 @@ func FuzzWorldScripts(f *testing.F) {
 		"when update\n  move right by 5 avoiding \"t\"\n  if touching(\"t\", right)\n    x -= 1\n",
 		"shared n = 0\nwhen stop touching \"t\"\n  n += 1\n  send \"x\"\nwhen click\n  print mouse.x\n",
 		"when start\n  for each o in all(\"t\")\n    o.x += 1\n    print distance(self, o)\n",
+		"when start\n  slide to 30, 4 in 0.05 seconds\n  wait 0.02 seconds\n  play sound \"a.wav\"\n  go to scene \"two\"\nwhen click\n  remember \"k\" as [x, \"y\"]\n  print recall(\"k\", 0)\n  restart scene\n",
+		"when every 0.02 seconds\n  wait 0.03 seconds\n  destroy other\nwhen touch \"t\"\n  wait 0.01 seconds\n  print sin(x) + cos(y)\n  stop music\n  play music \"a\"\n",
 	} {
 		f.Add(s)
 	}
@@ -906,7 +909,8 @@ func FuzzWorldScripts(f *testing.F) {
 		if len(src) > 2000 {
 			return
 		}
-		p := &proj{scripts: map[string]string{"a": src}, specs: []spec{
+		p := &proj{scripts: map[string]string{"a": src}, files: map[string]string{
+			"assets/a.wav": string(wavBytes(50)), "game/scenes/two.vide.json": doc("scene", "", sprite("z", 0, 0, `,"script":"scripts/a.tdsl"`))}, specs: []spec{
 			{name: "a", x: 0, y: 0, w: 10, h: 10, script: "a", tag: "me"},
 			{name: "b", x: 5, y: 5, w: 10, h: 10, tag: "t"},
 			{name: "c", x: 50, y: 5, w: 10, h: 10, tag: "t"},
@@ -916,8 +920,9 @@ func FuzzWorldScripts(f *testing.F) {
 		in.Press("space")
 		in.SetMouse(3, 3)
 		in.PressMouse()
-		for i := 0; i < 6; i++ {
-			if err := w.Step(); err != nil {
+		sim := NewSim(w)
+		for i := 0; i < 12; i++ {
+			if _, err := sim.Update(time.Second/60 + 1); err != nil {
 				t.Fatal(err)
 			}
 		}

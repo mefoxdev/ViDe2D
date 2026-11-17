@@ -1,6 +1,6 @@
 // Command vide-run runs a ViDe2D game in its own process.
 //
-//	vide-run [-root dir] [-seed n] <project.vide.json | scene file>
+//	vide-run [-root dir] [-seed n] [-saves dir] <project.vide.json | scene file>
 //
 // TrueDSL scripts run; "print" output and script errors go to stderr. Escape
 // is an ordinary key for the scripts; quit with Ctrl+Q or by closing the window.
@@ -19,8 +19,9 @@ import (
 func main() {
 	root := flag.String("root", "", "project root; must contain the scene file (default: the scene file's folder)")
 	seed := flag.Uint64("seed", 0, "random seed for scripts, 0 is a valid seed (default: taken from the clock and printed, so a game can be replayed)")
+	saves := flag.String("saves", "", "folder for the memory of games (remember/recall); default: <user config dir>/vide2d/saves")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: vide-run [-root dir] [-seed n] <project.vide.json | scene file>")
+		fmt.Fprintln(os.Stderr, "usage: vide-run [-root dir] [-seed n] [-saves dir] <project.vide.json | scene file>")
 		flag.PrintDefaults()
 		fmt.Fprintln(os.Stderr, "quit: Ctrl+Q or close the window (Escape is passed to the scripts)")
 	}
@@ -45,11 +46,17 @@ func main() {
 		*seed = uint64(time.Now().UnixNano())
 		fmt.Fprintln(os.Stderr, "vide-run: random seed", *seed)
 	}
-	w, src, err := runtime.Load(flag.Arg(0), *root, runtime.Options{
+	projectRoot, _, err := projfs.OpenRoot(flag.Arg(0), *root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vide-run:", err)
+		os.Exit(1)
+	}
+	opts := runtime.Options{
 		Scripts: true,
 		Seed:    *seed,
 		Log:     func(msg string) { fmt.Fprintln(os.Stderr, msg) },
-	})
+	}.WithDevices(projectRoot, *saves)
+	w, src, err := runtime.Load(flag.Arg(0), *root, opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "vide-run:", err)
 		os.Exit(1)

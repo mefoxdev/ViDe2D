@@ -49,7 +49,13 @@ func (g *Game) Run() error {
 	ebiten.SetWindowSize(w.ViewW*k, w.ViewH*k)
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	ebiten.SetTPS(ebiten.SyncWithFPS) // Update once per frame; the Clock makes the steps fixed
-	return ebiten.RunGame(g)
+	err := ebiten.RunGame(g)
+	// the game is over: save its memory and silence the sounds
+	if ferr := g.Sim.World.Flush(); ferr != nil {
+		log.Printf("memory of the game was not saved: %v", ferr)
+	}
+	g.Sim.World.StopSound()
+	return err
 }
 
 // Update runs the due simulation steps. Wall-clock time is read only here, at
@@ -91,7 +97,11 @@ func (g *Game) LayoutF(w, h float64) (float64, float64) {
 // Draw renders the world into the view image and scales it into the window.
 func (g *Game) Draw(screen *ebiten.Image) {
 	w := g.Sim.World
-	if g.view == nil {
+	if g.view == nil || g.view.Bounds().Dx() != w.ViewW || g.view.Bounds().Dy() != w.ViewH {
+		// the first frame, or a new scene with another view size: the window keeps its size
+		if g.view != nil {
+			g.view.Deallocate()
+		}
 		g.view = ebiten.NewImage(w.ViewW, w.ViewH)
 	}
 	g.view.Fill(color.RGBA{0x10, 0x11, 0x14, 0xff})

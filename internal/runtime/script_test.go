@@ -296,39 +296,73 @@ func TestDemoProjectScriptsRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in, sink := NewInputState(), &logSink{}
-	w, _, err := Load(filepath.Join(root, "project.vide.json"), root, Options{Scripts: true, Input: in, Log: sink.log})
+	in, sink, fa := NewInputState(), &logSink{}, &FakeAudio{}
+	w, _, err := Load(filepath.Join(root, "project.vide.json"), root, Options{Scripts: true, Input: in, Log: sink.log, Audio: fa})
 	if err != nil {
 		t.Fatal(err)
 	}
+	sim := NewSim(w)
 	hero, score := find(w, "hero"), find(w, "Score")
 	x0 := hero.X
 	in.Press("right")
-	steps(t, w, 60) // one second at speed 80
+	simSteps(t, sim, 60) // one second at speed 80
 	if d := hero.X - x0 - 80; d > 1e-9 || d < -1e-9 {
 		t.Fatalf("hero moved %v in a second, want 80", hero.X-x0)
 	}
 	in.Release("right")
 	in.Press("left")
-	steps(t, w, 30)
+	simSteps(t, sim, 30)
 	if !hero.Flip {
 		t.Fatal("flip not set")
 	}
-	// The hero walked over the coin: it is gone, the message arrived, the score counted it.
+	// The hero walked over the coin: it is gone, the message arrived, the score counted it,
+	// and the coin sounded.
 	if find(w, "coin") != nil {
 		t.Fatal("coin was not collected")
 	}
-	if score.Text != "Coins: 1 of 1" {
+	if score.Text != "You win!" && score.Text != "Coins: 1 of 1" {
 		t.Fatalf("score text %q", score.Text)
 	}
-	// "play" is the only thing the engine cannot do yet: it stops that handler
-	// run (after "send") with TD499, once; nothing else is reported.
-	all := sink.all()
-	if sink.count("TD499") != 1 || sink.count("Предупреждение:") != 1 || !strings.Contains(all, "play") { // the warning at load and the error at run time
-		t.Errorf("log:\n%s", all)
+	if strings.Join(fa.Sounds, ",") != "assets/coin.wav" {
+		t.Fatalf("sounds %v", fa.Sounds)
 	}
-	if sink.count("Во время игры") != 1 {
-		t.Errorf("unexpected runtime errors:\n%s", all)
+	if sink.count("Во время игры") != 0 || sink.count("Предупреждение") != 0 || sink.count("TD499") != 0 {
+		t.Errorf("unexpected log:\n%s", sink.all())
+	}
+	// "win" -> wait 2 seconds -> go to scene "level2": the scene is swapped, "shared" came along.
+	in.Release("left")
+	simSteps(t, sim, 2*60+5)
+	w2 := sim.World
+	if w2 == w || w2.Name != "Level 2" || w2.SceneRel() != "game/scenes/level2.vide.json" {
+		t.Fatalf("still in %q (%s)", w2.Name, w2.SceneRel())
+	}
+	info := find(w2, "Info")
+	if info == nil || !strings.Contains(info.Text, "Coins carried over: 1") || !strings.Contains(info.Text, "1 time(s)") {
+		t.Fatalf("level 2 text: %+v\n%s", info, sink.all())
+	}
+	// Enter: back to the main scene, the coin is there again and the counter was reset.
+	in.Press("enter")
+	simSteps(t, sim, 3)
+	if sim.World.Name != "Demo" || find(sim.World, "coin") == nil {
+		t.Fatalf("not back in the main scene: %q\n%s", sim.World.Name, sink.all())
+	}
+	if sink.count("Во время игры") != 0 {
+		t.Errorf("runtime errors:\n%s", sink.all())
+	}
+}
+
+// simStep runs exactly one simulation step through the Sim (so that scene
+// changes are applied) and simSteps n of them.
+func simSteps(t *testing.T, s *Sim, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		got, err := s.Update(time.Second/time.Duration(s.World.TickRate) + 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 1 {
+			t.Fatalf("%d steps ran, want 1", got)
+		}
 	}
 }
 

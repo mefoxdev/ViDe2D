@@ -21,6 +21,9 @@ const (
 // document is never modified, so it is safe to expand it many times.
 type Source struct {
 	Root string
+	// Main is the project path of the main scene (the one the game started
+	// with), "" if unknown. "go to scene" can reach it by the name "main".
+	Main string
 	docs map[string]*scene.Scene
 }
 

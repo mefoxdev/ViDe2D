@@ -23,6 +23,7 @@ type Phase int
 const (
 	PhaseInit    Phase = iota // variables of objects that have just appeared get their values
 	PhaseStart                // "when start" of objects that have just appeared
+	PhaseWake                 // handlers that were waiting ("wait", "slide") go on
 	PhaseInput                // "when key ...", "when click"
 	PhaseUpdate               // "when update"
 	PhaseTimers               // "when every ..."

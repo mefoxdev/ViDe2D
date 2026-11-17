@@ -53,6 +53,20 @@ func (s *Sim) Update(dt time.Duration) (int, error) {
 		if err := s.World.Step(); err != nil {
 			return i, err
 		}
+		if req := s.World.sceneReq; req != nil {
+			// A scene change is applied at the end of the step: the rest of the
+			// due steps belong to the old scene and are dropped, and the clock
+			// starts afresh with the new scene's tick rate.
+			s.World.sceneReq = nil
+			nw, err := s.World.Next(req)
+			if err != nil {
+				s.World.logf("Не удалось перейти на другую сцену: %v. Игра остаётся на этой сцене.", err)
+				continue
+			}
+			s.World = nw
+			s.Clock = NewClock(nw.TickRate)
+			return i + 1, nil
+		}
 	}
 	return n, nil
 }

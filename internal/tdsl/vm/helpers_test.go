@@ -10,6 +10,12 @@ import (
 // fakeHost is a one-object world for tests.
 type fakeHost struct {
 	NoWorld
+	sounds    []string
+	music     []string
+	stops     int
+	scenes    []string
+	restarts  int
+	mem       map[string]Value
 	rate      int
 	seed      uint64
 	props     map[Prop]Value
@@ -89,7 +95,7 @@ func setup(t testing.TB, src string, h *fakeHost) (*Engine, *Instance) {
 func step(e *Engine, in *Instance) []*Error {
 	e.BeginFrame()
 	var errs []*Error
-	for _, ph := range []Phase{PhaseInit, PhaseStart, PhaseInput, PhaseUpdate, PhaseTimers, PhaseTouches} {
+	for _, ph := range []Phase{PhaseInit, PhaseStart, PhaseWake, PhaseInput, PhaseUpdate, PhaseTimers, PhaseTouches} {
 		errs = append(errs, in.RunPhase(ph)...)
 	}
 	errs = append(errs, e.Deliver([]*Instance{in})...)

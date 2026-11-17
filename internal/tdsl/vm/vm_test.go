@@ -752,53 +752,6 @@ func TestPerSecondMovementAcrossTickRates(t *testing.T) {
 	}
 }
 
-func TestUnsupportedFeaturesFailCleanly(t *testing.T) {
-	src := `when start
-  print "before"
-  wait 1 second
-  print "after"
-when update
-  play sound "a.wav"
-when every 1 seconds
-  go to scene "x"
-`
-	h := newHost(60)
-	prog, errs := CompileSource("t.tdsl", src, nil)
-	if len(errs) > 0 {
-		t.Fatal(errs[0])
-	}
-	if len(prog.Warnings) != 3 {
-		t.Fatalf("warnings: %v", prog.Warnings)
-	}
-	e := NewEngine(h)
-	in := e.NewInstance(prog, 1)
-	errs2 := step(e, in)
-	if len(errs2) != 2 { // wait in start, play in update (the timer has not fired yet)
-		t.Fatalf("errors: %v", errs2)
-	}
-	for _, er := range errs2 {
-		if er.Code != CodeUnsupported || !strings.Contains(er.Message, "не поддерживается") {
-			t.Errorf("%+v", er)
-		}
-	}
-	if strings.Join(h.logs, ",") != "before" {
-		t.Fatalf("logs %v", h.logs)
-	}
-	for _, expr := range []string{"print sin(1)", "print recall(\"a\", 0)", "remember \"a\" as 1", "restart scene", "stop music"} {
-		p, errs := CompileSource("t.tdsl", "when start\n  "+expr+"\n", nil)
-		_ = errs
-		if p == nil {
-			continue
-		}
-		h := newHost(60)
-		e := NewEngine(h)
-		in := e.NewInstance(p, 1)
-		if errs := step(e, in); len(errs) != 1 || errs[0].Code != CodeUnsupported {
-			t.Errorf("%s: %v", expr, errs)
-		}
-	}
-}
-
 func TestShadowErrorFormatAndMultiline(t *testing.T) {
 	_, errs := runStart(t, "var z = 0\nvar q = 1 / z")
 	if len(errs) != 1 {

@@ -16,12 +16,15 @@ import (
 // PhaseInit and PhaseStart come before them for objects that have just
 // appeared: first every object sets up its variables, then the "when start"
 // handlers run, so a start handler can read the variables of any object.
+// PhaseWake follows them: the handlers that were waiting ("wait", "slide")
+// go on when their time has come.
 type Phase uint8
 
 // Phases of a frame, in order.
 const (
 	PhaseInit Phase = iota
 	PhaseStart
+	PhaseWake
 	PhaseInput
 	PhaseUpdate
 	PhaseTimers
@@ -46,6 +49,9 @@ type Engine struct {
 	queue  []Message           // sent, not yet delivered
 	sent   int                 // "send" commands in this frame
 	pairs  int                 // (message, object) pairs looked at, for the budget
+
+	tick    int64 // steps begun so far (BeginFrame); the clock of "wait" and "slide"
+	waiting int   // suspended handler runs in the whole game
 }
 
 // Message is a "send" waiting for delivery.
@@ -73,6 +79,7 @@ func NewEngine(h Host) *Engine {
 // BeginFrame restores the step budget of the frame. Call it once per
 // simulation step, before running any phase.
 func (e *Engine) BeginFrame() {
+	e.tick++
 	e.frameLeft = e.Limits.FrameSteps
 	e.skipped = 0
 	e.prints = 0
@@ -93,8 +100,37 @@ func (e *Engine) Shared(name string) (Value, bool) {
 	return v, ok
 }
 
-// Detach forgets the instance of an object that left the world.
-func (e *Engine) Detach(id ObjID) { delete(e.insts, id) }
+// Detach forgets the instance of an object that left the world. The handler
+// runs that were waiting on it are cancelled. (A chunk that is unloaded saves
+// its instances with Snapshot first, which keeps their waiting runs.)
+func (e *Engine) Detach(id ObjID) {
+	if in := e.insts[id]; in != nil {
+		in.cancelAll()
+	}
+	delete(e.insts, id)
+}
+
+// ExportShared returns a copy of the "shared" variables, to carry them to the
+// next scene (ImportShared). Objects become nothing in the copy: they belong
+// to the world that is going away.
+func (e *Engine) ExportShared() map[string]Value {
+	out := make(map[string]Value, len(e.shared))
+	memo := map[*List]*List{}
+	for k, v := range e.shared {
+		out[k] = copyValueNoObj(v, memo)
+	}
+	return out
+}
+
+// ImportShared sets "shared" variables from an earlier engine. Do it before
+// RegisterProgram: a variable that already has a value keeps it instead of
+// getting the initial value of its declaration.
+func (e *Engine) ImportShared(vals map[string]Value) {
+	memo := map[*List]*List{}
+	for k, v := range vals {
+		e.shared[k] = copyValueNoObj(v, memo)
+	}
+}
 
 // InstanceOf returns the live instance of an object, or nil.
 func (e *Engine) InstanceOf(id ObjID) *Instance { return e.insts[id] }
@@ -214,7 +250,8 @@ type Instance struct {
 	globals []Value
 	periods []int64 // for "every" handlers: steps between runs, 0 if none
 	busy    []bool  // a handler never runs inside itself
-	waiting []*Task // suspended runs (used by "wait" in a later stage)
+	waiting []*Task // the suspended run of each handler, nil if none
+	nWait   int     // how many are not nil
 	ticks   int64
 	touch   [][]ObjID // for touch handlers: the objects touched at the previous step
 	touchB  []ObjID
@@ -296,6 +333,20 @@ type InstanceState struct {
 	initDone  bool
 	startIdx  int
 	startDone bool
+	tasks     []*taskState // suspended runs, by handler
+}
+
+// taskState is a suspended run in a snapshot. Times are relative, so a chunk
+// that stays unloaded for a while does not lose or gain waiting time: time is
+// frozen while it is away.
+type taskState struct {
+	desc   string
+	stack  []Value
+	frames []frame
+	other  Value
+	value  Value
+	wakeIn int64
+	slide  *slideState // start holds the steps already done
 }
 
 // Snapshot copies the state of the instance. Lists are copied deeply (shared
@@ -309,6 +360,14 @@ func (in *Instance) Snapshot() *InstanceState {
 	}
 	for i, v := range in.globals {
 		st.globals[i] = copyValue(v, memo)
+	}
+	if in.nWait > 0 {
+		st.tasks = make([]*taskState, len(in.waiting))
+		for i, t := range in.waiting {
+			if t != nil {
+				st.tasks[i] = t.snapshot(memo)
+			}
+		}
 	}
 	return st
 }
@@ -326,10 +385,26 @@ func (in *Instance) Restore(st *InstanceState) bool {
 	copy(in.periods, st.periods)
 	in.ticks, in.initVar, in.initPer, in.initDone = st.ticks, st.initVar, st.initPer, st.initDone
 	in.startIdx, in.startDone = st.startIdx, st.startDone
+	in.cancelAll()
+	for i, ts := range st.tasks {
+		if ts == nil || i >= len(in.waiting) || !in.admitWait() {
+			continue // beyond the limits: the handler simply starts afresh when it is triggered
+		}
+		t := in.eng.restoreTask(in, ts, memo)
+		in.waiting[i], in.busy[i] = t, true
+	}
 	return true
 }
 
-func copyValue(v Value, memo map[*List]*List) Value {
+func copyValue(v Value, memo map[*List]*List) Value { return copyVal(v, memo, false) }
+
+// copyValueNoObj is copyValue that turns object references into nothing.
+func copyValueNoObj(v Value, memo map[*List]*List) Value { return copyVal(v, memo, true) }
+
+func copyVal(v Value, memo map[*List]*List, noObj bool) Value {
+	if v.K == KObj && noObj {
+		return Value{}
+	}
 	if v.K != KList {
 		return v
 	}
@@ -339,7 +414,7 @@ func copyValue(v Value, memo map[*List]*List) Value {
 	c := &List{Items: make([]Value, len(v.L.Items))}
 	memo[v.L] = c
 	for i, it := range v.L.Items {
-		c.Items[i] = copyValue(it, memo)
+		c.Items[i] = copyVal(it, memo, noObj)
 	}
 	return ListValue(c)
 }
@@ -386,6 +461,14 @@ func (in *Instance) RunPhase(ph Phase) (errs []*Error) {
 				continue
 			}
 			in.startIdx++
+		}
+	case PhaseWake:
+		if in.nWait > 0 {
+			for i, t := range in.waiting {
+				if t != nil {
+					add(in.resume(i, t))
+				}
+			}
 		}
 	case PhaseInput:
 		for i := range hs {
@@ -658,15 +741,85 @@ func (in *Instance) fireWith(i int, other, value Value) (err *Error) {
 	}()
 	t := e.newTask(in, h.fn, h.Desc)
 	t.other, t.value = other, value
+	t.canWait = h.canWait()
 	st, err := t.Run()
 	if st == StatusSuspended {
-		in.waiting[i] = t // woken by the scheduler of "wait" in a later stage
+		in.waiting[i] = t // woken by PhaseWake when its time has come
 		return err
 	}
 	in.busy[i] = false
-	e.release(t)
+	e.finish(t)
 	return err
 }
+
+// canWait reports whether the handler may suspend: those that run every frame
+// ("when update", "when key ... held") may not.
+func (h *HandlerInfo) canWait() bool {
+	return h.Event != tdsl.EventUpdate && !(h.Event == tdsl.EventKey && h.State == tdsl.KeyHeld)
+}
+
+// resume goes on with the suspended run of handler i if its time has come
+// (for "slide": moves the object to where it should be in this step first).
+func (in *Instance) resume(i int, t *Task) (err *Error) {
+	e := in.eng
+	if t.slide == nil && e.tick < t.wakeAt {
+		return nil
+	}
+	if e.frameLeft <= 0 {
+		e.skipped++ // out of steps: it goes on in a later frame, from the same place
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			in.waiting[i], in.busy[i] = nil, false
+			e.finish(t)
+			err = in.internalError(t.desc, r)
+		}
+	}()
+	if t.slide != nil {
+		e.frameLeft--
+		if stop, serr := t.slideStep(); stop {
+			in.waiting[i], in.busy[i] = nil, false
+			e.finish(t)
+			return serr
+		}
+		if t.slide != nil {
+			return nil // still gliding
+		}
+	}
+	t.steps = 0 // the step limit counts between two waits
+	st, err := t.Run()
+	if st == StatusSuspended {
+		return err
+	}
+	in.waiting[i], in.busy[i] = nil, false
+	e.finish(t)
+	return err
+}
+
+// cancelAll drops every suspended run of the instance.
+func (in *Instance) cancelAll() {
+	if in.nWait == 0 {
+		return
+	}
+	for i, t := range in.waiting {
+		if t != nil {
+			in.waiting[i], in.busy[i] = nil, false
+			in.eng.finish(t)
+		}
+	}
+}
+
+// admitWait reports whether one more suspended run is within the limits.
+func (in *Instance) admitWait() bool {
+	return in.nWait < in.eng.Limits.WaitingPerObj && in.eng.waiting < in.eng.Limits.Waiting
+}
+
+// Waiting is the number of handler runs of the instance that are suspended.
+func (in *Instance) Waiting() int { return in.nWait }
+
+// Waiting is the number of suspended handler runs in the whole game.
+func (e *Engine) Waiting() int { return e.waiting }
 
 // Call runs the "to" command name with the arguments, as if called from a
 // handler, and returns its result. It is meant for tests and tools.
@@ -719,6 +872,21 @@ type Task struct {
 	result Value
 	other  Value // the second object of a touch handler
 	value  Value // what came with a message
+
+	canWait bool        // the handler may suspend
+	counted bool        // counted in Engine.waiting and Instance.nWait
+	suspend bool        // set by exec: the run stops here, to go on later
+	wakeAt  int64       // for "wait": the step (Engine.tick) at which the run goes on
+	slide   *slideState // for "slide": where the object glides
+}
+
+// slideState is a "slide" in progress: the object moves from (sx, sy) to
+// (tx, ty), in x and y of the script (relative to the parent group), over n
+// steps counted from step start. Its position depends only on the step
+// count, so a run that is late (out of budget) catches up.
+type slideState struct {
+	sx, sy, tx, ty float64
+	start, n       int64
 }
 
 func (e *Engine) newTask(in *Instance, fn *Func, desc string) *Task {
@@ -732,11 +900,23 @@ func (e *Engine) newTask(in *Instance, fn *Func, desc string) *Task {
 	t.eng, t.in, t.desc = e, in, desc
 	t.stack, t.frames, t.steps, t.result = t.stack[:0], t.frames[:0], 0, Value{}
 	t.other, t.value = Value{}, Value{}
+	t.canWait, t.counted, t.suspend, t.wakeAt, t.slide = false, false, false, 0, nil
 	t.frames = append(t.frames, frame{fn: fn})
 	for i := 0; i < fn.NLocals; i++ {
 		t.stack = append(t.stack, Value{})
 	}
 	return t
+}
+
+// finish ends the life of a task: if it waited, it stops being counted, then
+// its memory is reused.
+func (e *Engine) finish(t *Task) {
+	if t.counted && t.in != nil {
+		t.counted = false
+		t.in.nWait--
+		e.waiting--
+	}
+	e.release(t)
 }
 
 func (e *Engine) release(t *Task) {
@@ -777,7 +957,12 @@ func (t *Task) Run() (st Status, err *Error) {
 			}
 		}
 	}()
-	return StatusDone, t.exec()
+	t.suspend = false
+	err = t.exec()
+	if err == nil && t.suspend {
+		return StatusSuspended, nil
+	}
+	return StatusDone, err
 }
 
 // cost charges n extra units of work for an operation that touches many
@@ -1245,12 +1430,212 @@ func (t *Task) exec() *Error {
 			e.sent++
 			e.queue = append(e.queue, m)
 
+		case OpWait:
+			d := t.pop()
+			if f := checkSeconds("Время в «wait»", d); f != nil {
+				return t.failAt(fn, pc-1, f)
+			}
+			if f := t.beginSuspend("wait"); f != nil {
+				return t.failAt(fn, pc-1, f)
+			}
+			t.wakeAt = e.tick + e.ticksFor(d.N)
+			t.frames[len(t.frames)-1].pc = pc
+			t.suspend = true
+			return nil
+		case OpSlide:
+			dur, y, x := t.pop(), t.pop(), t.pop()
+			if x.K != KNum {
+				return t.failAt(fn, pc-1, wrongKind("Координата x в «slide to»", KNum, x))
+			}
+			if y.K != KNum {
+				return t.failAt(fn, pc-1, wrongKind("Координата y в «slide to»", KNum, y))
+			}
+			if f := rangeFailure("Координата x в «slide to»", x.N); f != nil {
+				return t.failAt(fn, pc-1, f)
+			}
+			if f := rangeFailure("Координата y в «slide to»", y.N); f != nil {
+				return t.failAt(fn, pc-1, f)
+			}
+			if f := checkSeconds("Время в «slide to … in»", dur); f != nil {
+				return t.failAt(fn, pc-1, f)
+			}
+			if f := t.beginSuspend("slide"); f != nil {
+				return t.failAt(fn, pc-1, f)
+			}
+			sx, err := e.Host.GetProp(in.self, PropX)
+			if err != nil {
+				return t.failAt(fn, pc-1, hostFailure(err))
+			}
+			sy, err := e.Host.GetProp(in.self, PropY)
+			if err != nil {
+				return t.failAt(fn, pc-1, hostFailure(err))
+			}
+			t.slide = &slideState{sx: sx.N, sy: sy.N, tx: x.N, ty: y.N, start: e.tick, n: e.ticksFor(dur.N)}
+			t.frames[len(t.frames)-1].pc = pc
+			t.suspend = true
+			return nil
+		case OpPlay:
+			name := t.pop()
+			what := "Имя файла в «play sound»"
+			if ins.A == 1 {
+				what = "Имя файла в «play music»"
+			}
+			if name.K != KText {
+				return t.failAt(fn, pc-1, wrongKind(what, KText, name))
+			}
+			var err error
+			if ins.A == 1 {
+				err = e.Host.PlayMusic(name.S)
+			} else {
+				err = e.Host.PlaySound(name.S)
+			}
+			if err != nil {
+				return t.failAt(fn, pc-1, hostFailure(err))
+			}
+		case OpStopMusic:
+			e.Host.StopMusic()
+		case OpGoScene:
+			name := t.pop()
+			if name.K != KText {
+				return t.failAt(fn, pc-1, wrongKind("Имя сцены в «go to scene»", KText, name))
+			}
+			if err := e.Host.GoToScene(name.S); err != nil {
+				return t.failAt(fn, pc-1, hostFailure(err))
+			}
+		case OpRestart:
+			e.Host.RestartScene()
+		case OpRemember:
+			v, key := t.pop(), t.pop()
+			if key.K != KText {
+				return t.failAt(fn, pc-1, wrongKind("Ключ в «remember»", KText, key))
+			}
+			if f := t.storable(v); f != nil {
+				return t.failAt(fn, pc-1, f)
+			}
+			work, err := e.Host.Remember(key.S, v)
+			t.cost(work)
+			if err != nil {
+				return t.failAt(fn, pc-1, hostFailure(err))
+			}
+
 		case OpFail:
 			return t.failAt(fn, pc-1, &prog.fails[ins.A])
 		default:
 			return t.failAt(fn, pc-1, fl(CodeUnsupported, "Неизвестная инструкция "+ins.Op.String()+".", ""))
 		}
 	}
+}
+
+// checkSeconds validates the time of "wait" and "slide".
+func checkSeconds(ctx string, d Value) *failure {
+	if d.K != KNum {
+		return wrongKind(ctx, KNum, d)
+	}
+	if f := rangeFailure(ctx, d.N); f != nil {
+		return f
+	}
+	if d.N < 0 {
+		return fl(CodeWrongType, ctx+": время не может быть отрицательным.", "")
+	}
+	return nil
+}
+
+// ticksFor is the number of simulation steps in a number of seconds: rounded,
+// and at least one, so "wait 0 seconds" means "until the next step".
+func (e *Engine) ticksFor(sec float64) int64 {
+	n := math.Floor(float64(float64(sec*e.tickRate) + 0.5))
+	return int64(max(n, 1))
+}
+
+// beginSuspend checks that the run may stop here and is within the limits of
+// waiting runs, and counts it.
+func (t *Task) beginSuspend(cmd string) *failure {
+	if !t.canWait {
+		return fl(CodeWaitFrame, "«"+cmd+"» здесь нельзя: этот код выполняется каждый кадр или при запуске игры, ждать в нём нечего.",
+			"Ждать можно в «when start», «when key … pressed», «when click», «when touch», «when message» и «when every».")
+	}
+	if t.counted {
+		return nil
+	}
+	e, in := t.eng, t.in
+	if in.nWait >= e.Limits.WaitingPerObj {
+		return fl(CodeTooBig, fmt.Sprintf("Слишком много ждущих обработчиков у одного объекта: не больше %d.", e.Limits.WaitingPerObj),
+			"Обработчик, который уже ждёт, второй раз не запускается. Проверьте «wait» в разных обработчиках.")
+	}
+	if e.waiting >= e.Limits.Waiting {
+		return fl(CodeTooBig, fmt.Sprintf("Слишком много ждущих обработчиков во всей игре: не больше %d.", e.Limits.Waiting), "")
+	}
+	t.counted = true
+	in.nWait++
+	e.waiting++
+	return nil
+}
+
+// slideStep moves the sliding object to where it belongs at this step and
+// ends the slide when its time is up. stop reports that the run must be
+// dropped (the object is gone, or the move failed with err).
+func (t *Task) slideStep() (stop bool, err *Error) {
+	s, e := t.slide, t.eng
+	k := e.tick - s.start
+	if k <= 0 {
+		return false, nil
+	}
+	px, py := s.tx, s.ty
+	if k < s.n {
+		px = float64(s.sx + float64(float64(float64(s.tx-s.sx)*float64(k))/float64(s.n)))
+		py = float64(s.sy + float64(float64(float64(s.ty-s.sy)*float64(k))/float64(s.n)))
+	}
+	if herr := e.Host.MoveTo(t.in.self, px, py); herr != nil {
+		if herr == ErrGone {
+			return true, nil
+		}
+		top := t.frames[len(t.frames)-1]
+		return true, t.failAt(top.fn, top.pc-1, hostFailure(herr))
+	}
+	if k >= s.n {
+		t.slide = nil
+	}
+	return false, nil
+}
+
+// maxStoreDepth is how deeply lists may nest in the memory of the game.
+const maxStoreDepth = 8
+
+// storable checks that v may be remembered: a number, a text, yes/no or a
+// list of such values. The walk is bounded and charged to the step budget.
+func (t *Task) storable(v Value) *failure {
+	n := 0
+	bad := func(msg string) *failure {
+		return fl(CodeWrongType, msg, "Запоминать можно числа, текст, «да» или «нет» и списки из них.")
+	}
+	var walk func(v Value, depth int) *failure
+	walk = func(v Value, depth int) *failure {
+		if n++; n > maxCompareWork {
+			return fl(CodeTooBig, "Слишком большое значение для «remember».", "")
+		}
+		switch v.K {
+		case KNum:
+			if math.IsNaN(v.N) || math.IsInf(v.N, 0) {
+				return bad("Это число запомнить нельзя: оно не число или бесконечность.")
+			}
+		case KText, KBool:
+		case KList:
+			if depth >= maxStoreDepth {
+				return bad("Список вложен слишком глубоко для «remember» (не больше " + strconv.Itoa(maxStoreDepth) + " уровней).")
+			}
+			for _, it := range v.L.Items {
+				if f := walk(it, depth+1); f != nil {
+					return f
+				}
+			}
+		default:
+			return bad("Запомнить " + kindAcc[v.K] + " нельзя.")
+		}
+		return nil
+	}
+	f := walk(v, 0)
+	t.cost(n)
+	return f
 }
 
 func condFailure(a Value) *failure {
@@ -1903,6 +2288,30 @@ func (t *Task) callBuiltin(id int, a []Value) (Value, *failure) {
 			return Value{}, hostFailure(err)
 		}
 		return Num(d), nil
+	case bSin, bCos:
+		if a[0].K != KNum {
+			return Value{}, wrongKind(ctx, KNum, a[0])
+		}
+		if math.IsNaN(a[0].N) || math.IsInf(a[0].N, 0) {
+			return Value{}, rangeFailure(ctx, a[0].N)
+		}
+		if id == bSin {
+			return Num(SinDeg(a[0].N)), nil
+		}
+		return Num(CosDeg(a[0].N)), nil
+	case bRecall:
+		if a[0].K != KText {
+			return Value{}, wrongKind(ctx, KText, a[0])
+		}
+		v, ok, work := t.eng.Host.Recall(a[0].S)
+		t.cost(work)
+		switch {
+		case ok:
+			return v, nil
+		case len(a) > 1:
+			return a[1], nil
+		}
+		return Value{}, nil
 	case bTouching:
 		var tgt Target
 		switch a[0].K {
@@ -1959,4 +2368,38 @@ func truncateChars(s string, n int) string {
 		i++
 	}
 	return s
+}
+
+// snapshot copies a suspended task for InstanceState.
+func (t *Task) snapshot(memo map[*List]*List) *taskState {
+	ts := &taskState{desc: t.desc, stack: make([]Value, len(t.stack)), frames: append([]frame(nil), t.frames...),
+		other: copyValue(t.other, memo), value: copyValue(t.value, memo), wakeIn: t.wakeAt - t.eng.tick}
+	for i, v := range t.stack {
+		ts.stack[i] = copyValue(v, memo)
+	}
+	if t.slide != nil {
+		c := *t.slide
+		c.start = min(t.eng.tick-c.start, c.n) // the steps already done
+		ts.slide = &c
+	}
+	return ts
+}
+
+// restoreTask makes a suspended task of instance in from a snapshot.
+func (e *Engine) restoreTask(in *Instance, ts *taskState, memo map[*List]*List) *Task {
+	t := &Task{eng: e, in: in, desc: ts.desc, stack: make([]Value, len(ts.stack), max(len(ts.stack), 64)),
+		frames: append(make([]frame, 0, max(len(ts.frames), 8)), ts.frames...),
+		other:  copyValue(ts.other, memo), value: copyValue(ts.value, memo), canWait: true, counted: true}
+	for i, v := range ts.stack {
+		t.stack[i] = copyValue(v, memo)
+	}
+	t.wakeAt = e.tick + ts.wakeIn
+	if ts.slide != nil {
+		c := *ts.slide
+		c.start = e.tick - c.start
+		t.slide = &c
+	}
+	in.nWait++
+	e.waiting++
+	return t
 }

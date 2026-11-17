@@ -15,9 +15,12 @@
 //     does not);
 //   - only +, -, *, / and the exactly specified math.Floor, Ceil, Round, Abs,
 //     Sqrt and Mod are used (all of them are correctly rounded or exact);
-//     there is no sin or cos, because their results differ between platforms;
+//     sin and cos are our own (SinDeg, CosDeg): exact reduction of the angle
+//     and a Taylor polynomial of + - * only, because math.Sin and math.Cos
+//     differ between platforms;
 //   - random numbers come from PCG32 (see PCG), seeded by Host.Seed;
-//   - the VM never reads the wall clock; time is a count of simulation steps.
+//   - the VM never reads the wall clock; time is a count of simulation steps
+//     (Engine.BeginFrame counts them; "wait" and "slide" are measured in them).
 //
 // # Semantics decided here (the reference leaves them open)
 //
@@ -66,14 +69,40 @@
 //     commands of the library are compiled into the program; errors inside
 //     them quote the library file.
 //
-// Still not implemented, each reported as TD499 when its line is reached:
-// wait and slide, sounds and music, go to scene, restart scene, remember and
-// recall, sin and cos.
+// Everything of reference.md is implemented. TD499 (CodeUnsupported) is left
+// for syntax tree nodes the compiler does not know, which only a bug can cause.
 //
 // # Suspendable execution
 //
 // A handler run is a Task with its own value stack and its own heap-allocated
 // call frames. TrueDSL calls never use Go recursion, so a Task can stop in the
-// middle of a handler (Status Suspended) and be resumed later; "wait" will use
-// this in the next stage.
+// middle of a handler (Status Suspended) and be resumed later. "wait" and
+// "slide" do so:
+//
+//   - the task stays in Instance.waiting (the handler is busy, so it never
+//     runs inside itself); PhaseWake resumes it when Engine.tick reaches its
+//     wake step. "wait N seconds" is round(N * tickRate) steps, at least 1.
+//     "slide" sets the position on every step from the step count alone (a
+//     run that was late catches up) and puts the object exactly on the target
+//     in the last step, then the handler goes on in that same step;
+//   - the step limit of a handler counts again after every wait; the frame
+//     budget limits resumed runs like any other;
+//   - handlers that run every frame ("when update", "when key ... held"),
+//     start-up code and Instance.Call cannot suspend: TD104 at run time;
+//   - limits: Limits.WaitingPerObj suspended runs per instance and
+//     Limits.Waiting in the engine (TD402);
+//   - Engine.Detach (the object is gone) cancels the object's waiting runs;
+//     Instance.Snapshot keeps them (copied, times relative) and Restore brings
+//     them back, so a chunk can be unloaded and loaded again. A restored run
+//     goes on the remaining number of steps after the step in which Restore
+//     is called.
+//
+// # Sound, scenes, memory
+//
+// These are the Services part of Host (PlaySound, PlayMusic, StopMusic,
+// GoToScene, RestartScene, Remember, Recall). The VM only checks the types of
+// the arguments (and that a remembered value is a number, text, yes/no or a
+// list of them); everything else, including the errors TD304, TD305 and TD402,
+// is the host's. Engine.ExportShared and ImportShared carry the "shared"
+// variables from one scene to the next (objects become nothing).
 package vm

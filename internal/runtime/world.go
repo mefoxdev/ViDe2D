@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 
@@ -41,6 +42,17 @@ type Options struct {
 	// Seed seeds the random numbers of scripts. The same seed and the same
 	// input give the same game; the caller picks it (never the engine).
 	Seed uint64
+	// Audio plays the sounds of scripts. Nil means silence (NullAudio); the
+	// files are checked all the same, so errors do not depend on the sound card.
+	Audio Audio
+	// Store is the memory of the game ("remember" / "recall"). Nil means a
+	// fresh in-memory store, which nothing outlives; the game runner passes a
+	// FileStore.
+	Store Store
+
+	// carried from the previous scene (see Next)
+	mixer  *Mixer
+	shared map[string]vm.Value
 }
 
 // chunkUnit is one map chunk, loadable and unloadable on its own. The parsed
@@ -92,6 +104,8 @@ type World struct {
 	spawnDepth  int // nesting of "spawn" inside the start-up code of spawned objects
 	nextID      int
 	live        int
+	sceneReq    *SceneRequest // set by "go to scene" / "restart scene", applied by Sim after the step
+	rel         string        // project path of the scene document, "" if unknown
 	synced      bool
 	syncCamX    int
 	syncCamY    int
@@ -113,6 +127,16 @@ func NewWorld(src *Source, sc *scene.Scene, opts Options) (*World, error) {
 	if opts.ChunkRadius <= 0 {
 		opts.ChunkRadius = DefaultChunkRadius
 	}
+	if opts.Store == nil {
+		opts.Store = NewMemStore()
+	}
+	if opts.mixer == nil {
+		logf := opts.Log
+		if logf == nil {
+			logf = func(msg string) { fmt.Fprintln(os.Stderr, msg) }
+		}
+		opts.mixer = newMixer(src, opts.Audio, func(msg string) { logf(cleanLog(msg)) })
+	}
 	w := &World{
 		Name: sc.Root.Name, TileSize: sc.TileSize, ViewW: sc.ViewW, ViewH: sc.ViewH,
 		TickRate: sc.TickRate, ImageMode: sc.ImageMode,
@@ -124,6 +148,8 @@ func NewWorld(src *Source, sc *scene.Scene, opts Options) (*World, error) {
 			w.Input = NewInputState()
 		}
 		w.scripts = newScriptRuntime(w)
+		w.scripts.eng.ImportShared(opts.shared)
+		w.opts.shared = nil
 	}
 	if sc.Map != "" {
 		if err := w.loadMap(sc); err != nil {
@@ -462,6 +488,7 @@ func (w *World) Step() error {
 	if w.Input != nil {
 		w.Input.Advance()
 	}
+	w.saveMemory()
 	return w.syncChunks()
 }
 

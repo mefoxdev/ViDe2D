@@ -20,6 +20,7 @@ func Load(file, explicitRoot string, opts Options) (*World, *Source, error) {
 		return nil, nil, fmt.Errorf("cannot open %s: %w", file, err)
 	}
 	src := NewSource(root)
+	src.Main = rel
 	sc, err := src.Doc(rel)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", file, err)
@@ -28,5 +29,6 @@ func Load(file, explicitRoot string, opts Options) (*World, *Source, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", file, err)
 	}
+	w.rel = rel
 	return w, src, nil
 }

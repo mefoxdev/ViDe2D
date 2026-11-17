@@ -7,8 +7,8 @@ import (
 
 // Runtime error codes (docs/truedsl/errors.md). The type codes TD2xx are the
 // ones the static checker uses; the VM reports the same mistakes when the
-// checker could not see them. CodeUnsupported is not in errors.md: it marks a
-// language feature the VM does not implement yet.
+// checker could not see them. CodeUnsupported marks something the VM cannot run
+// (a node of the syntax tree it does not know).
 const (
 	CodeCompare     = "TD201"
 	CodeCondition   = "TD202"
@@ -23,6 +23,9 @@ const (
 	CodeObjects     = "TD403"
 	CodeDeep        = "TD404"
 	CodeNoProp      = "TD106"
+	CodeWaitFrame   = "TD104"
+	CodeBadFile     = "TD304"
+	CodeNoScene     = "TD305"
 	CodeReadOnly    = "TD107"
 	CodeUnsupported = "TD499"
 	CodeInternal    = "TD405" // a bug of the engine, caught by recover

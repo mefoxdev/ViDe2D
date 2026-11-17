@@ -100,7 +100,12 @@ func (l InProcessLauncher) Launch(e Entry) (ebiten.Game, error) {
 	if e.Err != "" {
 		return nil, errors.New(e.Err)
 	}
-	w, src, err := runtime.Load(e.File, e.Root, runtime.Options{Scripts: true, Seed: uint64(time.Now().UnixNano()), Log: l.Log})
+	root := e.Root
+	if root == "" {
+		root = filepath.Dir(e.File)
+	}
+	opts := runtime.Options{Scripts: true, Seed: uint64(time.Now().UnixNano()), Log: l.Log}.WithDevices(root, "")
+	w, src, err := runtime.Load(e.File, e.Root, opts)
 	if err != nil {
 		return nil, err
 	}

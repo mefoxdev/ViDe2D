@@ -10,3 +10,8 @@ when message "coin collected"
   text = "Coins: {coins} of 1"
   if coins is 1
     send "win"
+
+when message "win"
+  text = "You win!"
+  wait 2 seconds
+  go to scene "level2"

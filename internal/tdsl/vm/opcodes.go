@@ -83,6 +83,14 @@ const (
 	OpSpawn     // pop y, x, template; create the object, push it
 	OpSend      // pop to, with, text; queue the message (B=1: "to" was given)
 
+	OpWait      // pop seconds; suspend the handler for that long
+	OpSlide     // pop seconds, y, x; glide self to (x, y), suspending the handler meanwhile
+	OpPlay      // pop the name; play a sound (A=0) or music (A=1)
+	OpStopMusic // stop the music
+	OpGoScene   // pop the scene name; switch to it at the end of the frame
+	OpRestart   // restart the scene at the end of the frame
+	OpRemember  // pop value, key; store it in the game's memory
+
 	OpFail // stop with the failure Fails[A] (unsupported feature or a mistake found at compile time)
 )
 
@@ -92,7 +100,7 @@ var opNames = [...]string{
 	"LE", "GE", "IN", "NOTIN", "JUMP", "JUMPIFFALSE", "ANDJUMP", "ORJUMP", "CHECKBOOL", "CHECKNUM", "CHECKLIST",
 	"LIST", "TEXT", "INDEX", "SETINDEX", "LISTLEN", "MEMBER", "SETMEMBER", "GETPROP", "SETPROP", "KEY", "CALL",
 	"RETURN", "BUILTIN", "MOVE", "MOVETO", "DESTROY", "PRINT", "LISTAPPEND", "LISTREMOVE", "LISTCLEAR",
-	"LISTSORT", "LISTSHUFFLE", "NAME", "SETNAME", "OTHER", "VALUE", "MOUSE", "MOVEAVOID", "SPAWN", "SEND", "FAIL",
+	"LISTSORT", "LISTSHUFFLE", "NAME", "SETNAME", "OTHER", "VALUE", "MOUSE", "MOVEAVOID", "SPAWN", "SEND", "WAIT", "SLIDE", "PLAY", "STOPMUSIC", "GOSCENE", "RESTART", "REMEMBER", "FAIL",
 }
 
 func (o Op) String() string {
@@ -151,24 +159,21 @@ const (
 	bExists
 	bDistance
 	bTouching
+	bSin
+	bCos
+	bRecall
 )
 
 var builtinIDs = map[string]int{
 	"abs": bAbs, "min": bMin, "max": bMax, "round": bRound, "floor": bFloor, "ceil": bCeil,
 	"sqrt": bSqrt, "random": bRandom, "pick": bPick, "upper": bUpper, "lower": bLower,
 	"number": bNumber, "opposite": bOpposite, "find": bFind, "all": bAll, "count": bCount, "exists": bExists,
-	"distance": bDistance, "touching": bTouching,
+	"distance": bDistance, "touching": bTouching, "sin": bSin, "cos": bCos, "recall": bRecall,
 }
 
 var builtinArgs = [...]int{bAbs: 1, bMin: 2, bMax: 2, bRound: 1, bFloor: 1, bCeil: 1, bSqrt: 1, bRandom: 2,
 	bPick: 1, bUpper: 1, bLower: 1, bNumber: 1, bOpposite: 1,
-	bFind: 1, bAll: 1, bCount: 1, bExists: 1, bDistance: 2, bTouching: 1}
+	bFind: 1, bAll: 1, bCount: 1, bExists: 1, bDistance: 2, bTouching: 1, bSin: 1, bCos: 1, bRecall: 1}
 
 // builtinMax is the largest number of arguments where it differs from builtinArgs.
-var builtinMax = map[int]int{bTouching: 2}
-
-// unsupportedBuiltins are legal TrueDSL functions this version does not run.
-var unsupportedBuiltins = map[string]string{
-	"recall": "recall (память игры)",
-	"sin":    "sin и cos (их результат отличается на разных процессорах)", "cos": "sin и cos (их результат отличается на разных процессорах)",
-}
+var builtinMax = map[int]int{bTouching: 2, bRecall: 2}

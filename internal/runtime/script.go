@@ -404,6 +404,8 @@ func (b *scriptBehavior) RunPhase(_ *World, e *Entity, p Phase) {
 		ph = vm.PhaseInit
 	case PhaseStart:
 		ph = vm.PhaseStart
+	case PhaseWake:
+		ph = vm.PhaseWake
 	case PhaseInput:
 		ph = vm.PhaseInput
 	case PhaseUpdate:

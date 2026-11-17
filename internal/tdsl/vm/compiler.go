@@ -628,13 +628,22 @@ func (c *compiler) stmt(s tdsl.Stmt) {
 	case *tdsl.ListCmd:
 		c.listCmd(n)
 	case *tdsl.SlideTo:
-		c.unsupported(spanAt(n.Pos, 5), "slide (плавное движение)")
+		c.expr(n.X)
+		c.expr(n.Y)
+		c.expr(n.Duration)
+		c.emit(spanAt(n.Pos, 5), OpSlide, 0, 0)
 	case *tdsl.Wait:
-		c.unsupported(spanAt(n.Pos, 4), "wait (ожидание)")
+		c.expr(n.Duration)
+		c.emit(spanAt(n.Pos, 4), OpWait, 0, 0)
 	case *tdsl.Play:
-		c.unsupported(spanAt(n.Pos, 4), "play (звуки и музыка)")
+		c.expr(n.What)
+		kind := 0
+		if n.Kind == "music" {
+			kind = 1
+		}
+		c.emit(spanAt(n.Pos, 4), OpPlay, kind, 0)
 	case *tdsl.StopMusic:
-		c.unsupported(spanAt(n.Pos, 4), "stop music (звуки и музыка)")
+		c.emit(spanAt(n.Pos, 4), OpStopMusic, 0, 0)
 	case *tdsl.Send:
 		c.expr(n.Message)
 		if n.With != nil {
@@ -651,11 +660,14 @@ func (c *compiler) stmt(s tdsl.Stmt) {
 		}
 		c.emit(spanAt(n.Pos, 4), OpSend, 0, hasTo)
 	case *tdsl.GoToScene:
-		c.unsupported(spanAt(n.Pos, 2), "go to scene (переход между сценами)")
+		c.expr(n.Scene)
+		c.emit(spanAt(n.Pos, 2), OpGoScene, 0, 0)
 	case *tdsl.RestartScene:
-		c.unsupported(spanAt(n.Pos, 7), "restart scene (перезапуск сцены)")
+		c.emit(spanAt(n.Pos, 7), OpRestart, 0, 0)
 	case *tdsl.Remember:
-		c.unsupported(spanAt(n.Pos, 8), "remember (память игры)")
+		c.expr(n.Key)
+		c.expr(n.Value)
+		c.emit(spanAt(n.Pos, 8), OpRemember, 0, 0)
 	default:
 		c.unsupported(spanAt(s.Position(), 1), fmt.Sprintf("команда %T", s))
 	}
@@ -1029,10 +1041,6 @@ func (c *compiler) call(n *tdsl.Call, sp Span) {
 			c.expr(a)
 		}
 		c.emit(nameSp, OpBuiltin, id, len(n.Args))
-		return
-	}
-	if what, ok := unsupportedBuiltins[n.Name]; ok {
-		c.unsupported(nameSp, what)
 		return
 	}
 	c.mistake(nameSp, CodeUnknownName, "Я не знаю команды или функции «"+n.Name+"».")

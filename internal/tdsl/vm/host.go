@@ -116,7 +116,46 @@ type Host interface {
 	Mouse() (x, y float64, held bool)
 	// Clicked reports whether the mouse button went down in this step over the object.
 	Clicked(self ObjID) bool
+
+	Services
 }
+
+// Services is the part of the Host that is not about objects: sound, scenes
+// and the memory of the game. Every method is called while a script runs and
+// must be cheap or report its work.
+type Services interface {
+	// PlaySound and PlayMusic start a sound or the (looping) music. name is the
+	// text from the script: the host finds the file (HostError TD304 if it
+	// cannot). A new "play music" replaces the music that plays.
+	PlaySound(name string) error
+	PlayMusic(name string) error
+	// StopMusic stops the music; it does nothing if none plays.
+	StopMusic()
+	// GoToScene asks to switch to the scene at the end of the frame. The host
+	// checks the name at once (HostError TD305 for an unknown scene).
+	GoToScene(name string) error
+	// RestartScene asks to start the current scene anew at the end of the frame.
+	RestartScene()
+	// Remember stores a value in the game's memory (HostError TD402 when the
+	// limits are exceeded); work is the number of items looked at, for the
+	// step budget. Only numbers, texts, yes/no and lists of them reach it.
+	Remember(key string, v Value) (work int, err error)
+	// Recall reads the value stored under key (a copy: a list is not shared).
+	Recall(key string) (v Value, ok bool, work int)
+}
+
+// NoServices implements Services for a host without sound, scenes or memory:
+// sounds and scene changes do nothing, nothing is remembered. Embed it in
+// small test hosts.
+type NoServices struct{}
+
+func (NoServices) PlaySound(string) error              { return nil }
+func (NoServices) PlayMusic(string) error              { return nil }
+func (NoServices) StopMusic()                          {}
+func (NoServices) GoToScene(string) error              { return nil }
+func (NoServices) RestartScene()                       {}
+func (NoServices) Remember(string, Value) (int, error) { return 0, nil }
+func (NoServices) Recall(string) (Value, bool, int)    { return Value{}, false, 0 }
 
 // Target says what a touch query is about: one object (HasObj) or all the
 // objects that carry Tag.
@@ -158,6 +197,8 @@ type Limits struct {
 	SendsPerFrame  int // "send" commands per frame, whole game
 	Backlog        int // messages waiting for delivery (sent but not yet delivered)
 	Objects        int // live objects made by "spawn"
+	Waiting        int // suspended handler runs ("wait", "slide") in the whole game
+	WaitingPerObj  int // suspended handler runs of one object
 }
 
 // MaxCoord bounds the numbers a script may write into object properties and
@@ -167,5 +208,5 @@ const MaxCoord = 1e9
 // DefaultLimits returns the limits from safety.md.
 func DefaultLimits() Limits {
 	return Limits{FrameSteps: 200_000, HandlerSteps: 50_000, CallDepth: 64, ListItems: 100_000, TextChars: 10_000, PrintsPerFrame: 1000, PrintChars: 1000,
-		SendsPerFrame: 1000, Backlog: 5000, Objects: 5000}
+		SendsPerFrame: 1000, Backlog: 5000, Objects: 5000, Waiting: 10_000, WaitingPerObj: 16}
 }
