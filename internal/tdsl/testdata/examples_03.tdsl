@@ -1,0 +1,4 @@
+when every 1 second
+  move up by 2
+  wait 0.5 seconds
+  move down by 2

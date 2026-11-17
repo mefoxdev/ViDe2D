@@ -383,7 +383,7 @@ call        = NAME "(" [ expr { "," expr } ] ")" ;
 
 ### Зарезервированные слова
 
-`add and as at avoiding by clear destroy down each else every for forever go held hide if in is key left message move next no not nothing of or other per play print released remember remove repeat repeating restart return right round scene second seconds self send shared show shuffle slide sort spawn start stop sound music times to touch up update use value var wait when while with yes click pressed mouse`
+`add and as at avoiding by clear destroy down each else every for forever from go held hide if in is key left message move next no not nothing of or other per play print released remember remove repeat repeating restart return right round scene second seconds self send shared show shuffle slide sort spawn start stop sound music times to touch turn up update use value var wait when while with yes click pressed mouse`
 
 и имена свойств: `x y width height angle visible image tint flip layer tag name text font_size`.
 

@@ -1,0 +1,11 @@
+# в скрипте героя
+when touch "coin"
+  destroy other
+  send "coin collected"
+
+# в скрипте счётчика
+shared coins = 0
+
+when message "coin collected"
+  coins += 1
+  text = "Монет: {coins}"

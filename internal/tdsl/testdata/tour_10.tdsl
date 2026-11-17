@@ -1,0 +1,4 @@
+when click
+  hide
+  wait 2 seconds
+  show

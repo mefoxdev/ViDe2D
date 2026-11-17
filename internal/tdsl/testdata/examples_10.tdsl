@@ -1,0 +1,12 @@
+when key left held
+  move left by 120 per second
+
+when key right held
+  move right by 120 per second
+
+when touch "danger"
+  destroy other
+  lives -= 1
+  send "refresh"
+  if lives is 0
+    send "game over"

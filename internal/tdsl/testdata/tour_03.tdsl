@@ -1,0 +1,9 @@
+var speed = 60
+var lives = 3
+
+when key right held
+  move right by speed per second
+
+when touch "enemy"
+  lives -= 1
+  print "Осталось жизней: {lives}"

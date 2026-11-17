@@ -1,0 +1,7 @@
+var heading = right
+
+when update
+  move heading by 40 per second avoiding "wall"
+  if touching("wall", heading)
+    heading = opposite(heading)
+    flip = heading is left

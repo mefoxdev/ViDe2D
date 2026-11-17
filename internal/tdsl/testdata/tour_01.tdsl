@@ -1,0 +1,5 @@
+when key right held
+  move right by 60 per second
+
+when key left held
+  move left by 60 per second

@@ -1,0 +1,4 @@
+when update
+  move down by 90 per second
+  if y > 180
+    destroy

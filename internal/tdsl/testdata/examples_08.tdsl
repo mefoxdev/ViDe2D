@@ -1,0 +1,2 @@
+when every 1 second
+  spawn "Star" at random(10, 300), 0
