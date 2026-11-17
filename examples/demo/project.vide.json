@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "image_mode": "pixel",
+  "scene": {
+    "name": "Demo",
+    "kind": "Node",
+    "children": [
+      {"name": "grass", "kind": "Sprite", "x": 40, "y": 120, "w": 16, "h": 16, "color": "#5cc96b", "texture": "tiles/grass.png"},
+      {"name": "grass2", "kind": "Sprite", "x": 56, "y": 120, "w": 16, "h": 16, "color": "#5cc96b", "texture": "tiles/grass.png"},
+      {"name": "tree", "kind": "Sprite", "x": 200, "y": 96, "w": 16, "h": 20, "color": "#5cc96b", "texture": "tree.png"},
+      {"name": "hero", "kind": "Sprite", "x": 64, "y": 104, "w": 16, "h": 16, "color": "#4f9dff", "texture": "hero.png"},
+      {"name": "coin", "kind": "Sprite", "x": 120, "y": 100, "w": 8, "h": 8, "color": "#f0dc4a", "texture": "coin.png"}
+    ]
+  }
+}

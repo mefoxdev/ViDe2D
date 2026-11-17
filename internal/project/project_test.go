@@ -15,6 +15,8 @@ func sample() *scene.Scene {
 	h := s.Add(a, scene.KindSprite, "Hero")
 	h.X, h.Y, h.W, h.H = 1, 2, 16, 24
 	h.Color.R, h.Color.G, h.Color.B = 0x12, 0xab, 0xff
+	h.Texture = "chars/hero.png"
+	s.ImageMode = scene.ImageNormal
 	return s
 }
 
@@ -32,6 +34,9 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("round trip differs:\n%s\n%s", data, again)
 	}
 	h := s.Root.Children[0].Children[0]
+	if s.ImageMode != scene.ImageNormal || h.Texture != "chars/hero.png" {
+		t.Fatalf("texture/mode lost: %+v %q", h, s.ImageMode)
+	}
 	if h.Name != "Hero" || h.W != 16 || h.Color.G != 0xab {
 		t.Fatalf("bad hero: %+v", h)
 	}
@@ -50,17 +55,21 @@ func TestSaveLoad(t *testing.T) {
 
 func TestBadFiles(t *testing.T) {
 	cases := map[string]string{
-		"garbage":    `not json`,
-		"no version": `{"scene":{"name":"M","kind":"Node"}}`,
-		"future":     `{"version":99,"scene":{"name":"M","kind":"Node"}}`,
-		"no scene":   `{"version":1}`,
-		"bad kind":   `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Evil"}]}}`,
-		"zero size":  `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":0,"h":4}]}}`,
-		"bad color":  `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":4,"h":4,"color":"red"}]}}`,
-		"null child": `{"version":1,"scene":{"name":"M","kind":"Node","children":[null]}}`,
-		"empty name": `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"","kind":"Node"}]}}`,
-		"too deep":   deep(100),
-		"truncated":  `{"version":1,"scene":{"name":"M"`,
+		"garbage":       `not json`,
+		"no version":    `{"scene":{"name":"M","kind":"Node"}}`,
+		"future":        `{"version":99,"scene":{"name":"M","kind":"Node"}}`,
+		"no scene":      `{"version":1}`,
+		"bad kind":      `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Evil"}]}}`,
+		"zero size":     `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":0,"h":4}]}}`,
+		"bad color":     `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":4,"h":4,"color":"red"}]}}`,
+		"null child":    `{"version":1,"scene":{"name":"M","kind":"Node","children":[null]}}`,
+		"empty name":    `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"","kind":"Node"}]}}`,
+		"image mode":    `{"version":1,"image_mode":"blurry","scene":{"name":"M","kind":"Node"}}`,
+		"tex abs":       `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":4,"h":4,"texture":"/etc/passwd"}]}}`,
+		"tex up":        `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":4,"h":4,"texture":"../secret.png"}]}}`,
+		"tex backslash": `{"version":1,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":4,"h":4,"texture":"a\\b.png"}]}}`,
+		"too deep":      deep(100),
+		"truncated":     `{"version":1,"scene":{"name":"M"`,
 	}
 	for name, in := range cases {
 		if _, err := Unmarshal([]byte(in)); err == nil {

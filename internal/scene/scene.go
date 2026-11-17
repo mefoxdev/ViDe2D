@@ -15,6 +15,17 @@ const (
 	KindSprite Kind = "Sprite"
 )
 
+// ImageMode controls how images are displayed.
+type ImageMode string
+
+const (
+	// ImagePixel is pixel-native: nearest-neighbour sampling, whole-pixel
+	// placement, so pixels stay crisp and behave as in retro games.
+	ImagePixel ImageMode = "pixel"
+	// ImageNormal is smooth: linear filtering.
+	ImageNormal ImageMode = "normal"
+)
+
 // Node is one object in a scene. X/Y are local to the parent, in pixels.
 type Node struct {
 	ID       int
@@ -23,19 +34,21 @@ type Node struct {
 	X, Y     int
 	W, H     int // size in pixels; used by sprites
 	Color    color.RGBA
+	Texture  string // sprite image: slash-separated path relative to the assets folder
 	Parent   *Node
 	Children []*Node
 }
 
 // Scene is a tree of nodes with a single root.
 type Scene struct {
-	Root   *Node
-	nextID int
+	Root      *Node
+	ImageMode ImageMode
+	nextID    int
 }
 
 // New creates a scene with a root node.
 func New(rootName string) *Scene {
-	s := &Scene{}
+	s := &Scene{ImageMode: ImagePixel}
 	s.Root = s.newNode(KindNode, rootName)
 	return s
 }

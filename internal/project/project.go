@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/vide2d/vide-studio/internal/assets"
 	"github.com/vide2d/vide-studio/internal/scene"
 )
 
@@ -23,8 +24,9 @@ const (
 )
 
 type file struct {
-	Version int   `json:"version"`
-	Scene   *node `json:"scene"`
+	Version   int    `json:"version"`
+	ImageMode string `json:"image_mode,omitempty"`
+	Scene     *node  `json:"scene"`
 }
 
 type node struct {
@@ -35,18 +37,20 @@ type node struct {
 	W        int     `json:"w,omitempty"`
 	H        int     `json:"h,omitempty"`
 	Color    string  `json:"color,omitempty"`
+	Texture  string  `json:"texture,omitempty"`
 	Children []*node `json:"children,omitempty"`
 }
 
 // Marshal serializes a scene.
 func Marshal(s *scene.Scene) ([]byte, error) {
-	return json.MarshalIndent(file{Version: Version, Scene: toNode(s.Root)}, "", "  ")
+	return json.MarshalIndent(file{Version: Version, ImageMode: string(s.ImageMode), Scene: toNode(s.Root)}, "", "  ")
 }
 
 func toNode(n *scene.Node) *node {
 	o := &node{Name: n.Name, Kind: string(n.Kind), X: n.X, Y: n.Y}
 	if n.Kind == scene.KindSprite {
 		o.W, o.H = n.W, n.H
+		o.Texture = n.Texture
 		o.Color = fmt.Sprintf("#%02x%02x%02x", n.Color.R, n.Color.G, n.Color.B)
 	}
 	for _, c := range n.Children {
@@ -71,6 +75,13 @@ func Unmarshal(data []byte) (*scene.Scene, error) {
 		return nil, errors.New("invalid project file: missing scene root")
 	}
 	s := scene.New(f.Scene.Name)
+	switch m := scene.ImageMode(f.ImageMode); m {
+	case "":
+	case scene.ImagePixel, scene.ImageNormal:
+		s.ImageMode = m
+	default:
+		return nil, fmt.Errorf("invalid project file: unknown image_mode %q", f.ImageMode)
+	}
 	count := 1
 	root := f.Scene
 	s.Root.X, s.Root.Y = root.X, root.Y
@@ -105,6 +116,12 @@ func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *i
 				return fmt.Errorf("invalid project file: sprite %q has a non-positive size", k.Name)
 			}
 			n.W, n.H = k.W, k.H
+			if k.Texture != "" {
+				if !assets.ValidPath(k.Texture) {
+					return fmt.Errorf("invalid project file: sprite %q: bad texture path %q", k.Name, k.Texture)
+				}
+				n.Texture = k.Texture
+			}
 			if k.Color != "" {
 				c, err := parseColor(k.Color)
 				if err != nil {

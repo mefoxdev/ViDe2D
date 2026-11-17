@@ -69,6 +69,9 @@ type Studio struct {
 	treeScroll int
 	mode       ViewMode
 	dock       *dock.Dock
+	tex        *textures
+	assets     assetState
+	vp         image.Rectangle // viewport content rect from the last frame
 
 	path  string // project file; empty disables saving
 	saved []byte // serialized scene as last saved/loaded
@@ -83,6 +86,8 @@ type Studio struct {
 func New(path string) *Studio {
 	s := &Studio{ui: ui.New(), zoom: 2, path: path}
 	s.dock = dock.New(loadLayout(), panelTitles)
+	s.assets.dir = assetsDirFor(path)
+	s.tex = newTextures(s.assets.dir)
 	loaded := false
 	if path != "" {
 		sc, err := project.Load(path)
@@ -108,6 +113,7 @@ func New(path string) *Studio {
 	if data, err := project.Marshal(s.scene); err == nil && loaded {
 		s.saved = data
 	}
+	s.refreshAssets()
 	s.Logf("Middle mouse / Space+drag: pan, wheel: zoom, drag objects to move, F: center view, Tab: 2D/Blueprint.")
 	return s
 }
@@ -189,6 +195,7 @@ func (s *Studio) Update() error {
 	toolbar := image.Rect(0, 0, s.w, toolbarH)
 	rects := s.dock.Update(u, image.Rect(0, toolbarH, s.w, s.h))
 
+	s.vp = rects[panelViewport]
 	if r, ok := rects[panelViewport]; ok {
 		s.viewport(r)
 	}
@@ -202,6 +209,10 @@ func (s *Studio) Update() error {
 	if r, ok := rects[panelConsole]; ok {
 		s.console(r)
 	}
+	if r, ok := rects[panelAssets]; ok {
+		s.assetsPanel(r)
+	}
+	s.assetDrag()
 	s.dock.DrawOverlay(u)
 	if s.dock.Changed() {
 		if err := saveLayout(s.dock.Root); err != nil {
@@ -264,6 +275,20 @@ func (s *Studio) toolbar(r image.Rectangle) {
 			s.mode = m.mode
 		}
 	}
+	x += 14
+	for _, m := range []struct {
+		label string
+		mode  scene.ImageMode
+		w     int
+	}{{"Pixel", scene.ImagePixel, 64}, {"Normal", scene.ImageNormal, 74}} {
+		b := image.Rect(x, r.Min.Y+6, x+m.w, r.Max.Y-6)
+		x += m.w + 6
+		if u.Toggle(b, m.label, s.scene.ImageMode == m.mode) {
+			s.scene.ImageMode = m.mode
+			s.Logf("Images: %s", m.mode)
+		}
+	}
+	x += 14
 	if btn("Layout", 70, true) {
 		s.dock.Root = defaultLayout()
 		if err := saveLayout(s.dock.Root); err != nil {
@@ -281,6 +306,9 @@ func (s *Studio) toolbar(r image.Rectangle) {
 	x += 20
 	if btn("Play", 70, true) {
 		s.Logf("Play: the ViDe2D runtime is not connected yet.")
+	}
+	if s.w < 1300 {
+		return
 	}
 	u.Text(image.Rect(s.w-260, r.Min.Y, s.w-8, r.Max.Y), "scene: "+s.scene.Root.Name+map[bool]string{true: " *", false: ""}[s.dirty], u.Theme.TextDim)
 }
@@ -374,6 +402,21 @@ func (s *Studio) inspector(r image.Rectangle) {
 			}
 		}
 	}
+	if n.Kind == scene.KindSprite {
+		tr := line()
+		u.Text(image.Rect(tr.Min.X, tr.Min.Y, tr.Min.X+60, tr.Max.Y), "Texture", u.Theme.TextDim)
+		val, col := "none", u.Theme.TextDim
+		if n.Texture != "" {
+			val, col = n.Texture, u.Theme.Text
+			if s.tex.get(n.Texture) == nil {
+				val, col = "missing: "+n.Texture, color.RGBA{0xff, 0x6b, 0x6b, 0xff}
+			}
+			if u.Button(image.Rect(tr.Max.X-24, tr.Min.Y, tr.Max.X, tr.Max.Y), "×", true) {
+				n.Texture = ""
+			}
+		}
+		u.Text(image.Rect(tr.Min.X+62, tr.Min.Y, tr.Max.X-28, tr.Max.Y), u.FitText(val, float64(tr.Dx()-92)), col)
+	}
 	y += 6
 	u.Text(line(), "Shift: step 8 • Enter: apply", u.Theme.TextDim)
 }
@@ -414,6 +457,8 @@ type item struct {
 	r        image.Rectangle // screen rect
 	n        *scene.Node
 	selected bool
+	img      *ebiten.Image // sprite texture, if loaded
+	missing  bool          // texture set but could not be loaded
 }
 
 func (s *Studio) toWorld(x, y int) (int, int) {
@@ -487,10 +532,16 @@ func (s *Studio) viewport(r image.Rectangle) {
 	s.scene.Root.Walk(func(n *scene.Node, _ int) {
 		x, y := n.WorldPos()
 		w, h := s.boxSize(n)
-		items = append(items, item{
+		it := item{
 			r: image.Rect(int(s.originX)+x*z, int(s.originY)+y*z, int(s.originX)+(x+w)*z, int(s.originY)+(y+h)*z),
 			n: n, selected: n == s.sel,
-		})
+		}
+		if n.Kind == scene.KindSprite && n.Texture != "" {
+			if it.img = s.tex.get(n.Texture); it.img == nil {
+				it.missing = true
+			}
+		}
+		items = append(items, it)
 	})
 	ox, oy, mode := int(s.originX), int(s.originY), s.mode
 	u.Emit(func(d *ebiten.Image) {
@@ -546,7 +597,14 @@ func (s *Studio) drawViewport(d *ebiten.Image, r image.Rectangle, ox, oy, z int,
 
 	for _, it := range items {
 		if it.n.Kind == scene.KindSprite {
-			ui.FillRect(d, it.r, it.n.Color)
+			switch {
+			case it.img != nil:
+				drawImage(d, it.img, it.r, s.scene.ImageMode)
+			case it.missing:
+				ui.FillRect(d, it.r, color.RGBA{0xff, 0x00, 0xff, 0xff})
+			default:
+				ui.FillRect(d, it.r, it.n.Color)
+			}
 			if it.selected {
 				ui.StrokeRect(d, it.r.Inset(-2), t.Accent)
 			}
@@ -652,20 +710,21 @@ const (
 	panelViewport  dock.PanelID = "viewport"
 	panelInspector dock.PanelID = "inspector"
 	panelConsole   dock.PanelID = "console"
+	panelAssets    dock.PanelID = "assets"
 )
 
 var (
-	allPanels   = []dock.PanelID{panelScene, panelViewport, panelInspector, panelConsole}
+	allPanels   = []dock.PanelID{panelScene, panelViewport, panelInspector, panelConsole, panelAssets}
 	panelTitles = map[dock.PanelID]string{
-		panelScene: "Scene", panelViewport: "Viewport", panelInspector: "Inspector", panelConsole: "Console",
+		panelScene: "Scene", panelViewport: "Viewport", panelInspector: "Inspector", panelConsole: "Console", panelAssets: "Assets",
 	}
 )
 
 func defaultLayout() *dock.Node {
-	return &dock.Node{Dir: dock.SplitV, Ratio: 0.78,
+	return &dock.Node{Dir: dock.SplitV, Ratio: 0.72,
 		A: &dock.Node{Dir: dock.SplitH, Ratio: 0.19, A: dock.Leaf(panelScene),
 			B: &dock.Node{Dir: dock.SplitH, Ratio: 0.8, A: dock.Leaf(panelViewport), B: dock.Leaf(panelInspector)}},
-		B: dock.Leaf(panelConsole)}
+		B: &dock.Node{Dir: dock.SplitH, Ratio: 0.62, A: dock.Leaf(panelAssets), B: dock.Leaf(panelConsole)}}
 }
 
 func layoutPath() string {
