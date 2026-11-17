@@ -44,7 +44,9 @@ type file struct {
 	ImageMode string `json:"image_mode,omitempty"`
 	TileSize  int    `json:"tile_size,omitempty"`
 	Map       string `json:"map,omitempty"`
-	Scene     *node  `json:"scene"`
+	// Optimization is a map parameter; a map file without it is optimized.
+	Optimization *bool `json:"optimization,omitempty"`
+	Scene        *node `json:"scene"`
 }
 
 type node struct {
@@ -68,7 +70,15 @@ type node struct {
 
 // Marshal serializes a scene.
 func Marshal(s *scene.Scene) ([]byte, error) {
-	return json.MarshalIndent(file{Version: Version, Type: string(s.Type), ImageMode: string(s.ImageMode), TileSize: s.TileSize, Map: s.Map, Scene: toNode(s.Root)}, "", "  ")
+	return json.MarshalIndent(file{Version: Version, Type: string(s.Type), ImageMode: string(s.ImageMode), TileSize: s.TileSize, Map: s.Map, Optimization: mapOpt(s), Scene: toNode(s.Root)}, "", "  ")
+}
+
+func mapOpt(s *scene.Scene) *bool {
+	if s.Type != scene.DocMap {
+		return nil
+	}
+	v := s.Optimization
+	return &v
 }
 
 func toNode(n *scene.Node) *node {
@@ -115,6 +125,11 @@ func Unmarshal(data []byte) (*scene.Scene, error) {
 		s.Type = t
 	default:
 		return nil, fmt.Errorf("invalid project file: unknown type %q", f.Type)
+	}
+	if s.Type == scene.DocMap {
+		s.Optimization = f.Optimization == nil || *f.Optimization // default: optimized
+	} else if f.Optimization != nil {
+		return nil, errors.New("invalid project file: only maps have the optimization parameter")
 	}
 	if f.TileSize != 0 {
 		if f.TileSize < 1 || f.TileSize > 256 {
@@ -287,19 +302,33 @@ func validateStructure(s *scene.Scene) error {
 		}
 		return nil
 	}
+	var nested *scene.Node
+	s.Root.Walk(func(n *scene.Node, _ int) {
+		if n.Kind == scene.KindChunk && n.Parent != s.Root && nested == nil {
+			nested = n
+		}
+	})
+	if nested != nil {
+		return fmt.Errorf("invalid project file: chunk %q must be placed directly in the map", nested.Name)
+	}
 	seen := map[[2]int]bool{}
 	size := s.ChunkSize()
 	for _, c := range s.Root.Children {
 		if c.Kind != scene.KindChunk {
-			return fmt.Errorf("invalid project file: a map can only contain chunks, found %q", c.Name)
+			if s.Optimization {
+				return fmt.Errorf("invalid project file: an optimized map can only contain chunks, found %q", c.Name)
+			}
+			continue
 		}
 		key := [2]int{c.CX, c.CY}
 		if seen[key] {
 			return fmt.Errorf("invalid project file: two chunks at %d,%d", c.CX, c.CY)
 		}
 		seen[key] = true
-		if msg := scene.ChunkOverflow(c, size); msg != "" {
-			return fmt.Errorf("invalid project file: %s", msg)
+		if s.Optimization {
+			if msg := scene.ChunkOverflow(c, size); msg != "" {
+				return fmt.Errorf("invalid project file: %s", msg)
+			}
 		}
 	}
 	return nil

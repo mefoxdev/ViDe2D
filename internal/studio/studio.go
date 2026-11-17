@@ -680,7 +680,7 @@ func (s *Studio) viewport(r image.Rectangle) {
 				pwx, pwy = p.WorldPos()
 			}
 			nx, ny := wx-s.grabX, wy-s.grabY
-			if ch := chunkOf(s.dragging); ch != nil && s.dragging.HasBox() {
+			if ch := chunkOf(s.dragging); ch != nil && s.dragging.HasBox() && s.scene.Optimization {
 				// objects of a map stay inside their chunk
 				size := s.scene.ChunkSize()
 				nx = min(max(nx, ch.X), ch.X+size-s.dragging.W)
@@ -1002,7 +1002,7 @@ func saveLayout(n *dock.Node) error {
 var docDescriptions = map[scene.DocType]string{
 	scene.DocScene:  "Scene: the finished product",
 	scene.DocObject: "Object: a reusable building block",
-	scene.DocMap:    "Map: chunks of 64×64 tiles",
+	scene.DocMap:    "Map: the world of the game",
 }
 
 func (s *Studio) docSettings(n *scene.Node, line func() image.Rectangle) {
@@ -1018,6 +1018,9 @@ func (s *Studio) docSettings(n *scene.Node, line func() image.Rectangle) {
 				c.X, c.Y = s.scene.ChunkOrigin(c)
 			}
 		}
+	}
+	if s.scene.Type == scene.DocMap {
+		s.mapOptimization(n, line)
 	}
 	if s.scene.Type != scene.DocScene {
 		return
@@ -1051,4 +1054,35 @@ func (s *Studio) moveChunk(n *scene.Node, cx, cy int) {
 	}
 	n.CX, n.CY = cx, cy
 	n.X, n.Y = s.scene.ChunkOrigin(n)
+}
+
+// mapOptimization shows the map's optimization parameter and its status.
+func (s *Studio) mapOptimization(n *scene.Node, line func() image.Rectangle) {
+	u := s.ui
+	or := line()
+	u.Text(image.Rect(or.Min.X, or.Min.Y, or.Min.X+110, or.Max.Y), "Optimization", u.Theme.TextDim)
+	label := "no"
+	if s.scene.Optimization {
+		label = "yes"
+	}
+	if u.Toggle(image.Rect(or.Max.X-56, or.Min.Y, or.Max.X, or.Max.Y), label, s.scene.Optimization) {
+		if s.scene.Optimization {
+			s.scene.Optimization = false
+			s.Logf("%s is no longer optimized: it may have any layout and loads as one piece.", s.scene.Root.Name)
+		} else if moved, bad := s.cutIntoChunks(); len(bad) > 0 {
+			s.Logf("Cannot optimize: %s would cross a chunk border (%d×%d tiles). Move or resize %s first.",
+				strings.Join(bad, ", "), scene.ChunkTiles, scene.ChunkTiles, map[bool]string{true: "it", false: "them"}[len(bad) == 1])
+		} else {
+			s.scene.Optimization = true
+			s.Logf("%s is optimized: %d object(s) moved into chunks of %d×%d tiles.", s.scene.Root.Name, moved, scene.ChunkTiles, scene.ChunkTiles)
+		}
+	}
+	switch {
+	case s.scene.Status() == scene.StatusOptimized:
+		u.Text(line(), "Status: "+scene.StatusOptimized, colImage)
+	case s.scene.Optimization:
+		u.Text(line(), "Not optimized yet: fix the red objects", color.RGBA{0xff, 0x6b, 0x6b, 0xff})
+	default:
+		u.Text(line(), "Loads as one piece", u.Theme.TextDim)
+	}
 }

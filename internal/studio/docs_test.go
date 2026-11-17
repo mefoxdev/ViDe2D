@@ -210,3 +210,84 @@ func TestListObjectsAndClassification(t *testing.T) {
 		t.Fatalf("kind %v", k)
 	}
 }
+
+func TestOptimizationOffFreesTheMap(t *testing.T) {
+	s := newTestStudio(t)
+	if err := s.newDocFile(scene.DocMap, "World"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.scene.Optimization || s.scene.Status() != scene.StatusOptimized {
+		t.Fatal("a new map starts optimized")
+	}
+	// loose object at the root is not allowed while optimized (addParent refuses)
+	s.sel = s.scene.Root
+	if _, ok := s.addParent(); ok {
+		t.Fatal("optimized maps need a chunk to put objects in")
+	}
+	s.scene.Optimization = false
+	if p, ok := s.addParent(); !ok || p != s.scene.Root {
+		t.Fatal("free-form maps accept objects at the root")
+	}
+	big := s.scene.Add(nil, scene.KindSprite, "Hill")
+	big.X, big.Y, big.W, big.H = 5000, 0, 4000, 900
+	if err := s.saveDoc(s.docs[s.cur]); err != nil {
+		t.Fatalf("a non-optimized map must save: %v", err)
+	}
+	if s.scene.Status() != "" {
+		t.Fatal("no status without optimization")
+	}
+}
+
+func TestCutIntoChunks(t *testing.T) {
+	s := newTestStudio(t)
+	if err := s.newDocFile(scene.DocMap, "World"); err != nil {
+		t.Fatal(err)
+	}
+	size := s.scene.ChunkSize()
+	s.scene.Optimization = false
+	a := s.scene.Add(nil, scene.KindSprite, "A")
+	a.X, a.Y, a.W, a.H = 10, 20, 16, 16
+	b := s.scene.Add(nil, scene.KindSprite, "B")
+	b.X, b.Y, b.W, b.H = size+5, -size+7, 16, 16 // chunk (1,-1)
+	g := s.scene.Add(nil, scene.KindNode, "Group")
+	g.X, g.Y = 3, 4
+	child := s.scene.Add(g, scene.KindSprite, "Kid")
+	child.X, child.Y, child.W, child.H = 1, 1, 8, 8
+
+	moved, bad := s.cutIntoChunks()
+	if len(bad) != 0 || moved != 3 {
+		t.Fatalf("moved %d, problems %v", moved, bad)
+	}
+	s.scene.Optimization = true
+	if s.scene.Status() != scene.StatusOptimized {
+		t.Fatalf("status after cutting: %q", s.scene.Status())
+	}
+	if a.Parent.CX != 0 || a.Parent.CY != 0 || a.X != 10 || a.Y != 20 {
+		t.Fatalf("A: chunk %d,%d pos %d,%d", a.Parent.CX, a.Parent.CY, a.X, a.Y)
+	}
+	if b.Parent.CX != 1 || b.Parent.CY != -1 || b.X != 5 || b.Y != 7 {
+		t.Fatalf("B: chunk %d,%d pos %d,%d", b.Parent.CX, b.Parent.CY, b.X, b.Y)
+	}
+	if g.Parent != a.Parent || g.X != 3 {
+		t.Fatalf("group should land in chunk 0,0 keeping its children")
+	}
+
+	// an object that crosses a chunk border cannot be placed; nothing changes
+	s.scene.Optimization = false
+	wide := s.scene.Add(nil, scene.KindSprite, "Wide")
+	wide.X, wide.Y, wide.W, wide.H = size-8, 0, 16, 16
+	loose := s.scene.Add(nil, scene.KindSprite, "Loose")
+	loose.X, loose.Y, loose.W, loose.H = 4, 4, 4, 4
+	moved, bad = s.cutIntoChunks()
+	if moved != 0 || len(bad) != 1 || bad[0] != "Wide" || loose.Parent != s.scene.Root {
+		t.Fatalf("expected a clean refusal: moved=%d bad=%v", moved, bad)
+	}
+}
+
+func TestFloorDiv(t *testing.T) {
+	for _, c := range [][3]int{{0, 10, 0}, {9, 10, 0}, {10, 10, 1}, {-1, 10, -1}, {-10, 10, -1}, {-11, 10, -2}} {
+		if got := floorDiv(c[0], c[1]); got != c[2] {
+			t.Errorf("floorDiv(%d,%d)=%d want %d", c[0], c[1], got, c[2])
+		}
+	}
+}

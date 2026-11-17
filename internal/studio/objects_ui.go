@@ -56,7 +56,7 @@ func (s *Studio) addParent() (*scene.Node, bool) {
 	for p != s.scene.Root && p.Kind != scene.KindNode && p.Kind != scene.KindChunk {
 		p = p.Parent
 	}
-	if s.scene.Type == scene.DocMap && p == s.scene.Root {
+	if s.scene.Type == scene.DocMap && s.scene.Optimization && p == s.scene.Root {
 		s.Logf("In a map, objects live inside chunks: select a chunk first (or add one with + Chunk).")
 		return nil, false
 	}
@@ -228,7 +228,10 @@ func (s *Studio) docTabs(r image.Rectangle) image.Rectangle {
 	}
 	// what the active document is, at the right
 	desc := map[scene.DocType]string{scene.DocScene: "scene", scene.DocObject: "object", scene.DocMap: "map"}[s.scene.Type]
-	u.Text(image.Rect(strip.Max.X-90, strip.Min.Y, strip.Max.X-8, strip.Max.Y), desc, docColor(s.scene.Type))
+	if st := s.scene.Status(); st != "" {
+		desc += " · " + st
+	}
+	u.Text(image.Rect(strip.Max.X-200, strip.Min.Y, strip.Max.X-8, strip.Max.Y), desc, docColor(s.scene.Type))
 	return image.Rect(r.Min.X, strip.Max.Y, r.Max.X, r.Max.Y)
 }
 

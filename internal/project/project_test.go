@@ -209,3 +209,57 @@ func TestDocTypeRules(t *testing.T) {
 		t.Fatalf("sprite exactly filling the chunk corner must be accepted: %v", err)
 	}
 }
+
+func TestMapOptimization(t *testing.T) {
+	free := `{"version":3,"type":"map","optimization":false,"scene":{"name":"M","kind":"Node","children":[
+	  {"name":"Hill","kind":"Sprite","x":5000,"y":-300,"w":4000,"h":900},
+	  {"name":"c","kind":"Chunk","chunk":[0,0],"children":[{"name":"S","kind":"Sprite","x":1020,"y":0,"w":16,"h":16}]}]}}`
+	s, err := Unmarshal([]byte(free))
+	if err != nil {
+		t.Fatalf("a non-optimized map is free-form: %v", err)
+	}
+	if s.Optimization || s.Status() != "" {
+		t.Fatalf("flag/status: %v %q", s.Optimization, s.Status())
+	}
+	// the same content is rejected when the map is optimized
+	opt := strings.Replace(free, `"optimization":false`, `"optimization":true`, 1)
+	if _, err := Unmarshal([]byte(opt)); err == nil {
+		t.Fatal("an optimized map must be cut into chunks")
+	}
+	// a map file without the parameter is optimized
+	legacy := `{"version":3,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"c","kind":"Chunk","chunk":[0,0]}]}}`
+	m, err := Unmarshal([]byte(legacy))
+	if err != nil || !m.Optimization || m.Status() != scene.StatusOptimized {
+		t.Fatalf("legacy map: %v %+v", err, m)
+	}
+	// round trip keeps the parameter, and only maps may have it
+	data, _ := Marshal(s)
+	if !strings.Contains(string(data), `"optimization": false`) {
+		t.Fatalf("parameter not written: %s", data)
+	}
+	if _, err := Unmarshal([]byte(`{"version":3,"type":"object","optimization":true,"scene":{"name":"M","kind":"Node"}}`)); err == nil {
+		t.Fatal("objects have no optimization parameter")
+	}
+	if _, err := Unmarshal([]byte(`{"version":3,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"n","kind":"Node","children":[{"name":"c","kind":"Chunk","chunk":[0,0]}]}]},"optimization":false}`)); err == nil {
+		t.Fatal("chunks must sit directly in the map")
+	}
+}
+
+func TestStatusOptimized(t *testing.T) {
+	m := scene.New("W")
+	m.Type, m.Optimization = scene.DocMap, true
+	c := m.Add(nil, scene.KindChunk, "c")
+	if m.Status() != scene.StatusOptimized {
+		t.Fatal("empty chunk map should be optimized")
+	}
+	sp := m.Add(c, scene.KindSprite, "S")
+	sp.X = m.ChunkSize()
+	if m.Status() != "" {
+		t.Fatal("overflowing content must lose the status")
+	}
+	sp.X = 0
+	m.Add(nil, scene.KindNode, "loose")
+	if m.Status() != "" {
+		t.Fatal("loose objects outside chunks must lose the status")
+	}
+}

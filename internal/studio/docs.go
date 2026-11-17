@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -176,8 +177,8 @@ func (s *Studio) saveDoc(d *document) error {
 
 // mapProblem describes the first thing that makes a map unsaveable, or "".
 func mapProblem(sc *scene.Scene) string {
-	if sc.Type != scene.DocMap {
-		return ""
+	if sc.Type != scene.DocMap || !sc.Optimization {
+		return "" // free-form maps have no chunk rules
 	}
 	for _, c := range sc.Root.Children {
 		if c.Kind != scene.KindChunk {
@@ -215,6 +216,7 @@ func (s *Studio) newDocFile(typ scene.DocType, name string) error {
 	sc := scene.New(name)
 	sc.Type = typ
 	if typ == scene.DocMap {
+		sc.Optimization = true // new maps are optimized: cut into chunks
 		c := sc.Add(nil, scene.KindChunk, "Chunk 0,0")
 		c.X, c.Y = sc.ChunkOrigin(c)
 	}
@@ -366,7 +368,7 @@ func (w *walker) node(n *scene.Node, ox, oy int, owner *scene.Node, inside bool,
 	case w.blueprint:
 		f.w, f.h = blueprintNodeSize, blueprintNodeSize
 	}
-	if chunk != nil && !inside && n.HasBox() {
+	if chunk != nil && !inside && n.HasBox() && w.s.scene.Optimization {
 		size := w.s.scene.ChunkSize()
 		lx, ly := x-chunk.X, y-chunk.Y
 		f.bad = lx < 0 || ly < 0 || lx+n.W > size || ly+n.H > size
@@ -432,4 +434,76 @@ func (s *Studio) instanceBounds(ref string, depth int, stack []string) (x, y, w,
 		return 0, 0, def, def
 	}
 	return minX, minY, maxX - minX, maxY - minY
+}
+
+func floorDiv(a, b int) int {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
+}
+
+// cutIntoChunks moves the loose top-level objects of a map into chunks, so
+// that the map can be optimized. An object that would cross a chunk border
+// cannot be placed: nothing is changed then, and the names of the offending
+// objects are returned. It also returns how many objects were moved.
+func (s *Studio) cutIntoChunks() (moved int, problems []string) {
+	sc := s.scene
+	size := sc.ChunkSize()
+	type plan struct {
+		n      *scene.Node
+		cx, cy int
+	}
+	var plans []plan
+	for _, n := range sc.Root.Children {
+		if n.Kind == scene.KindChunk {
+			continue
+		}
+		w := &walker{s: s, budget: 5000}
+		w.node(n, 0, 0, nil, false, nil, 0, nil)
+		minX, minY, maxX, maxY := n.X, n.Y, n.X+1, n.Y+1
+		first := true
+		for _, f := range w.out {
+			if f.w <= 0 || f.h <= 0 {
+				continue
+			}
+			if first {
+				minX, minY, maxX, maxY, first = f.x, f.y, f.x+f.w, f.y+f.h, false
+				continue
+			}
+			minX, minY = min(minX, f.x), min(minY, f.y)
+			maxX, maxY = max(maxX, f.x+f.w), max(maxY, f.y+f.h)
+		}
+		cx, cy := floorDiv(minX, size), floorDiv(minY, size)
+		if floorDiv(maxX-1, size) != cx || floorDiv(maxY-1, size) != cy || cx < -4096 || cx > 4096 || cy < -4096 || cy > 4096 {
+			problems = append(problems, n.Name)
+			continue
+		}
+		plans = append(plans, plan{n, cx, cy})
+	}
+	if len(problems) > 0 {
+		return 0, problems
+	}
+	chunks := map[[2]int]*scene.Node{}
+	for _, c := range sc.Root.Children {
+		if c.Kind == scene.KindChunk {
+			chunks[[2]int{c.CX, c.CY}] = c
+		}
+	}
+	for _, p := range plans {
+		key := [2]int{p.cx, p.cy}
+		c := chunks[key]
+		if c == nil {
+			c = sc.Add(nil, scene.KindChunk, "Chunk "+strconv.Itoa(p.cx)+","+strconv.Itoa(p.cy))
+			c.CX, c.CY = p.cx, p.cy
+			c.X, c.Y = sc.ChunkOrigin(c)
+			chunks[key] = c
+		}
+		sc.Reparent(p.n, c)
+		p.n.X -= c.X
+		p.n.Y -= c.Y
+		moved++
+	}
+	return moved, nil
 }

@@ -79,7 +79,12 @@ type Scene struct {
 	Type      DocType
 	TileSize  int    // tile side in pixels
 	Map       string // scenes only: project-relative path of the map document
-	nextID    int
+	// Optimization is a map parameter. When true the map must be cut into
+	// chunks of ChunkTiles×ChunkTiles tiles (so that they can be loaded and
+	// unloaded while the game runs) and is distributed with the status
+	// "optimized". When false the map may be any layout and is loaded whole.
+	Optimization bool
+	nextID       int
 }
 
 // New creates a scene with a root node.
@@ -92,6 +97,49 @@ func New(rootName string) *Scene {
 func (s *Scene) newNode(kind Kind, name string) *Node {
 	s.nextID++
 	return &Node{ID: s.nextID, Name: name, Kind: kind, Color: color.RGBA{0x8a, 0x8f, 0x9c, 0xff}}
+}
+
+// StatusOptimized is the status a valid optimized map carries when distributed.
+const StatusOptimized = "optimized"
+
+// Status returns the distribution status of the document: "optimized" for a
+// map with Optimization on whose content really is cut into chunks that
+// contain their objects, and "" otherwise.
+func (s *Scene) Status() string {
+	if s.Type != DocMap || !s.Optimization {
+		return ""
+	}
+	size := s.ChunkSize()
+	for _, c := range s.Root.Children {
+		if c.Kind != KindChunk || ChunkOverflow(c, size) != "" {
+			return ""
+		}
+	}
+	return StatusOptimized
+}
+
+// Reparent moves n (with its subtree) under parent, keeping its position in
+// scene coordinates is the caller's job. It reports false for the root or if
+// parent is inside n.
+func (s *Scene) Reparent(n, parent *Node) bool {
+	if n == nil || parent == nil || n.Parent == nil {
+		return false
+	}
+	for p := parent; p != nil; p = p.Parent {
+		if p == n {
+			return false
+		}
+	}
+	old := n.Parent
+	for i, c := range old.Children {
+		if c == n {
+			old.Children = append(old.Children[:i], old.Children[i+1:]...)
+			break
+		}
+	}
+	n.Parent = parent
+	parent.Children = append(parent.Children, n)
+	return true
 }
 
 // ChunkSize is the side of a chunk in pixels.
