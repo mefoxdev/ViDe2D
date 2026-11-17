@@ -6,9 +6,7 @@ import (
 	"image/color"
 	"math"
 	"os"
-	"path"
 	"sort"
-	"strings"
 	"unicode"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -17,6 +15,7 @@ import (
 	"github.com/vide2d/vide-studio/internal/clip"
 	"github.com/vide2d/vide-studio/internal/codeedit"
 	"github.com/vide2d/vide-studio/internal/project"
+	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/scene"
 	"github.com/vide2d/vide-studio/internal/tdsl"
 	"github.com/vide2d/vide-studio/internal/ui"
@@ -127,6 +126,7 @@ func (s *Studio) saveCode() {
 // refreshCodeEnv rebuilds what the checker and the completer know about the project.
 func (s *Studio) refreshCodeEnv() {
 	c := &s.code
+	s.refreshProject()
 	env := &tdsl.Env{Objects: []string{}, Templates: []string{}, SharedDeclared: map[string]string{}}
 	tags := map[string]bool{}
 	s.scene.Root.Walk(func(n *scene.Node, _ int) {
@@ -142,13 +142,14 @@ func (s *Studio) refreshCodeEnv() {
 		env.Tags = append(env.Tags, t)
 	}
 	sort.Strings(env.Tags)
-	scripts := s.listScripts()
-	env.Scripts = scripts
-	for _, name := range scripts {
-		if name == c.rel {
+	env.Scripts = s.resourceNames(true, projfs.KindCode)
+	env.Assets = s.resourceNames(true, projfs.KindImage, projfs.KindSound)
+	env.Scenes = s.sceneNames()
+	for _, f := range projfs.Files(s.proj.top, projfs.KindCode) {
+		if f.Path == c.rel {
 			continue
 		}
-		data, err := os.ReadFile(s.scriptFile(name))
+		data, err := os.ReadFile(s.scriptFile(f.Path))
 		if err != nil || len(data) > codeedit.MaxBytes {
 			continue
 		}
@@ -158,42 +159,17 @@ func (s *Studio) refreshCodeEnv() {
 		}
 		for _, it := range sc.Items {
 			if sh, ok := it.(*tdsl.SharedDecl); ok {
-				env.SharedDeclared[sh.Name] = name
+				env.SharedDeclared[sh.Name] = f.Path
 			}
 		}
-	}
-	var images []string
-	for _, a := range s.assets.list {
-		images = append(images, a.Path)
 	}
 	c.env = env
-	c.cenv = &tdsl.CompleteEnv{Objects: env.Objects, Tags: env.Tags, Assets: images, Scripts: scripts}
-}
-
-// listScripts lists the .tdsl files in the scripts folder (recursively), as
-// slash-separated relative paths.
-func (s *Studio) listScripts() []string {
-	var out []string
-	var walk func(dir, prefix string, depth int)
-	walk = func(dir, prefix string, depth int) {
-		entries, err := os.ReadDir(dir)
-		if err != nil || depth > 4 || len(out) > 2000 {
-			return
-		}
-		for _, e := range entries {
-			switch {
-			case e.IsDir():
-				walk(dir+string(os.PathSeparator)+e.Name(), prefix+e.Name()+"/", depth+1)
-			case e.Type().IsRegular() && strings.EqualFold(path.Ext(e.Name()), scriptExt):
-				out = append(out, prefix+e.Name())
-			}
-		}
+	c.cenv = &tdsl.CompleteEnv{
+		Objects: env.Objects, Tags: env.Tags,
+		Assets:  s.resourceNames(false, projfs.KindImage, projfs.KindSound),
+		Scripts: s.resourceNames(false, projfs.KindCode),
+		Scenes:  env.Scenes,
 	}
-	if s.scriptsDir != "" {
-		walk(s.scriptsDir, "", 0)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func (s *Studio) runDiag() {

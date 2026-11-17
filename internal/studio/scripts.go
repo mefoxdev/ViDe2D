@@ -9,17 +9,11 @@ import (
 	"unicode"
 
 	"github.com/vide2d/vide-studio/internal/assets"
+	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/scene"
 )
 
 const scriptExt = ".tdsl"
-
-func scriptsDirFor(project string) string {
-	if project == "" {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(project), "scripts")
-}
 
 // marks returns small badges shown after a node's name.
 func marks(n *scene.Node) string {
@@ -33,23 +27,19 @@ func marks(n *scene.Node) string {
 	return m
 }
 
-// scriptFile resolves a script path to a file inside the scripts folder.
-// It returns "" if the path is not a safe relative .tdsl path.
+// scriptFile resolves a project-relative script path to a file path. It
+// returns "" if the path is not a safe relative .tdsl path.
 func (s *Studio) scriptFile(rel string) string {
-	if s.scriptsDir == "" || !assets.ValidRelPath(rel, scriptExt) {
+	if !assets.ValidRelPath(rel, scriptExt) {
 		return ""
 	}
-	return filepath.Join(s.scriptsDir, filepath.FromSlash(rel))
+	return projfs.Resolve(s.proj.dir, rel)
 }
 
 // scriptExists reports whether rel names an existing regular file.
 func (s *Studio) scriptExists(rel string) bool {
 	f := s.scriptFile(rel)
-	if f == "" {
-		return false
-	}
-	st, err := os.Lstat(f)
-	return err == nil && st.Mode().IsRegular()
+	return f != "" && projfs.IsRegular(f)
 }
 
 // safeFileName turns a node name into a file name stem: letters, digits, '_'
@@ -72,10 +62,11 @@ func safeFileName(name string) string {
 
 // newScript creates a starter script for n and attaches it.
 func (s *Studio) newScript(n *scene.Node) error {
-	if s.scriptsDir == "" {
+	if s.proj.dir == "" {
 		return errors.New("this project has no folder, so scripts cannot be created")
 	}
-	if err := os.MkdirAll(s.scriptsDir, 0o755); err != nil {
+	dir := filepath.Join(s.proj.dir, "scripts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	stem := safeFileName(n.Name)
@@ -85,7 +76,7 @@ func (s *Studio) newScript(n *scene.Node) error {
 		if i > 1 {
 			rel = fmt.Sprintf("%s%d%s", stem, i, scriptExt)
 		}
-		f, err := os.OpenFile(filepath.Join(s.scriptsDir, rel), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err := os.OpenFile(filepath.Join(dir, rel), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}
@@ -99,7 +90,7 @@ func (s *Studio) newScript(n *scene.Node) error {
 		if werr != nil {
 			return werr
 		}
-		n.Script = rel
+		n.Script = "scripts/" + rel
 		return nil
 	}
 	return errors.New("too many scripts with this name")

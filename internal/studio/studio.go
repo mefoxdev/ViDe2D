@@ -74,9 +74,8 @@ type Studio struct {
 	mode       ViewMode
 	dock       *dock.Dock
 	tex        *textures
-	scriptsDir string
 	code       code
-	assets     assetState
+	proj       projState
 	vp         image.Rectangle // viewport content rect from the last frame
 
 	path  string // project file; empty disables saving
@@ -92,9 +91,8 @@ type Studio struct {
 func New(path string) *Studio {
 	s := &Studio{ui: ui.New(), zoom: 2, path: path}
 	s.dock = dock.New(loadLayout(), panelTitles)
-	s.assets.dir = assetsDirFor(path)
-	s.scriptsDir = scriptsDirFor(path)
-	s.tex = newTextures(s.assets.dir)
+	s.proj.dir = projDirFor(path)
+	s.tex = newTextures(s.proj.dir)
 	loaded := false
 	if path != "" {
 		sc, err := project.Load(path)
@@ -120,7 +118,7 @@ func New(path string) *Studio {
 	if data, err := project.Marshal(s.scene); err == nil && loaded {
 		s.saved = data
 	}
-	s.refreshAssets()
+	s.refreshProject()
 	s.Logf("Middle mouse / Space+drag: pan, wheel: zoom, drag objects to move, F: center view, Tab: 2D/Blueprint.")
 	return s
 }
@@ -222,10 +220,10 @@ func (s *Studio) Update() error {
 		s.code.focus = false
 		u.External = false
 	}
-	if r, ok := rects[panelAssets]; ok {
-		s.assetsPanel(r)
+	if r, ok := rects[panelProject]; ok {
+		s.projPanel(r)
 	}
-	s.assetDrag()
+	s.projDrag()
 	s.dock.DrawOverlay(u)
 	if s.dock.Changed() {
 		if err := saveLayout(s.dock.Root); err != nil {
@@ -815,22 +813,22 @@ const (
 	panelViewport  dock.PanelID = "viewport"
 	panelInspector dock.PanelID = "inspector"
 	panelConsole   dock.PanelID = "console"
-	panelAssets    dock.PanelID = "assets"
+	panelProject   dock.PanelID = "project"
 	panelCode      dock.PanelID = "vcode"
 )
 
 var (
-	allPanels   = []dock.PanelID{panelScene, panelViewport, panelInspector, panelConsole, panelAssets, panelCode}
+	allPanels   = []dock.PanelID{panelScene, panelViewport, panelInspector, panelConsole, panelProject, panelCode}
 	panelTitles = map[dock.PanelID]string{
-		panelScene: "Scene", panelViewport: "Viewport", panelInspector: "Inspector", panelConsole: "Console", panelAssets: "Assets", panelCode: "VCode",
+		panelScene: "Scene", panelViewport: "Viewport", panelInspector: "Inspector", panelConsole: "Console", panelProject: "Project", panelCode: "VCode",
 	}
 )
 
 func defaultLayout() *dock.Node {
-	return &dock.Node{Dir: dock.SplitV, Ratio: 0.72,
+	return &dock.Node{Dir: dock.SplitV, Ratio: 0.66,
 		A: &dock.Node{Dir: dock.SplitH, Ratio: 0.19, A: dock.Leaf(panelScene),
 			B: &dock.Node{Dir: dock.SplitH, Ratio: 0.8, A: dock.Leaf(panelViewport, panelCode), B: dock.Leaf(panelInspector)}},
-		B: &dock.Node{Dir: dock.SplitH, Ratio: 0.62, A: dock.Leaf(panelAssets), B: dock.Leaf(panelConsole)}}
+		B: &dock.Node{Dir: dock.SplitH, Ratio: 0.62, A: dock.Leaf(panelProject), B: dock.Leaf(panelConsole)}}
 }
 
 func layoutPath() string {

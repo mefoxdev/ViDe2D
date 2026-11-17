@@ -41,24 +41,19 @@ func TestValidPath(t *testing.T) {
 	}
 }
 
-func TestScanAndDecode(t *testing.T) {
+func TestDecode(t *testing.T) {
 	root := t.TempDir()
 	writePNG(t, filepath.Join(root, "hero.png"), 16, 24)
 	writePNG(t, filepath.Join(root, "tiles", "grass.png"), 8, 8)
-	os.WriteFile(filepath.Join(root, "notes.txt"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(root, "broken.png"), []byte("not a png"), 0o644)
 	writePNG(t, filepath.Join(root, "huge.png"), MaxSide+1, 1)
 
-	list, err := Scan(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list) != 2 || list[0] != (Info{"hero.png", 16, 24}) || list[1] != (Info{"tiles/grass.png", 8, 8}) {
-		t.Fatalf("scan: %+v", list)
-	}
 	img, err := Decode(root, "hero.png")
-	if err != nil || img.Bounds().Dx() != 16 {
+	if err != nil || img.Bounds().Dx() != 16 || img.Bounds().Dy() != 24 {
 		t.Fatalf("decode: %v", err)
+	}
+	if img, err := Decode(root, "tiles/grass.png"); err != nil || img.Bounds().Dx() != 8 {
+		t.Fatalf("nested decode: %v", err)
 	}
 	for _, bad := range []string{"../x.png", "broken.png", "huge.png", "missing.png", "/etc/passwd"} {
 		if _, err := Decode(root, bad); err == nil {
@@ -67,21 +62,11 @@ func TestScanAndDecode(t *testing.T) {
 	}
 }
 
-func TestScanMissingRoot(t *testing.T) {
-	list, err := Scan(filepath.Join(t.TempDir(), "nope"))
-	if err != nil || len(list) != 0 {
-		t.Fatalf("%v %v", list, err)
-	}
-}
-
 func TestSymlinkSkipped(t *testing.T) {
 	root, outside := t.TempDir(), t.TempDir()
 	writePNG(t, filepath.Join(outside, "secret.png"), 4, 4)
 	if err := os.Symlink(filepath.Join(outside, "secret.png"), filepath.Join(root, "link.png")); err != nil {
 		t.Skip("symlinks unavailable")
-	}
-	if list, _ := Scan(root); len(list) != 0 {
-		t.Fatalf("symlink listed: %+v", list)
 	}
 	if _, err := Decode(root, "link.png"); err == nil {
 		t.Fatal("symlink decoded")

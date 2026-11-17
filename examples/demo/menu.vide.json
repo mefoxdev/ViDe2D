@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "image_mode": "pixel",
+  "scene": {
+    "name": "Menu",
+    "kind": "Node",
+    "children": [
+      {
+        "name": "Title",
+        "kind": "Text",
+        "x": 100,
+        "y": 70,
+        "w": 140,
+        "h": 16,
+        "color": "#e2e5ec",
+        "text": "Coin Dash",
+        "font_size": 14
+      }
+    ]
+  }
+}

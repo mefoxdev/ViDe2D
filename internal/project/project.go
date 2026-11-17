@@ -19,7 +19,11 @@ import (
 )
 
 // Version is the current file format version.
-const Version = 1
+//
+// Version 1 stored texture paths relative to an assets/ folder and script
+// paths relative to a scripts/ folder; version 2 stores both relative to the
+// project folder. Version 1 files are upgraded on load.
+const Version = 2
 
 const (
 	maxDepth = 64
@@ -102,6 +106,9 @@ func Unmarshal(data []byte) (*scene.Scene, error) {
 	if root.Template {
 		return nil, errors.New("invalid project file: the scene root cannot be a template")
 	}
+	if f.Version == 1 {
+		upgradeV1(root, 0)
+	}
 	if err := applyMeta(s.Root, root); err != nil {
 		return nil, err
 	}
@@ -174,6 +181,22 @@ func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *i
 		}
 	}
 	return nil
+}
+
+// upgradeV1 rewrites version 1 paths to project-relative ones.
+func upgradeV1(n *node, depth int) {
+	if n == nil || depth > maxDepth+1 {
+		return
+	}
+	if n.Texture != "" {
+		n.Texture = "assets/" + n.Texture
+	}
+	if n.Script != "" {
+		n.Script = "scripts/" + n.Script
+	}
+	for _, c := range n.Children {
+		upgradeV1(c, depth+1)
+	}
 }
 
 // applyMeta validates and copies the tag, script and template fields.

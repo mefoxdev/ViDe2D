@@ -1,5 +1,5 @@
-// Package assets scans and safely decodes image assets from a project's
-// assets folder. Asset paths are slash-separated and relative to that folder.
+// Package assets safely decodes image files of a project. Paths are
+// slash-separated and relative to the project folder.
 package assets
 
 import (
@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"image"
 	_ "image/png" // register PNG decoder
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -20,17 +18,10 @@ const (
 	MaxSide      = 8192
 	MaxPixels    = 16 << 20
 	MaxFileBytes = 32 << 20
-	MaxAssets    = 5000
 )
 
-// Info describes one image asset.
-type Info struct {
-	Path string // slash-separated, relative to the assets folder
-	W, H int
-}
-
-// ValidPath reports whether p is a safe relative asset path: slash-separated,
-// local (no "..", not absolute), no backslashes, and a .png file.
+// ValidPath reports whether p is a safe relative path to a .png file:
+// slash-separated, local (no "..", not absolute), no backslashes, already clean.
 func ValidPath(p string) bool { return ValidRelPath(p, ".png") }
 
 // ValidRelPath is like ValidPath for any of the given file extensions.
@@ -43,40 +34,6 @@ func ValidRelPath(p string, exts ...string) bool {
 		okExt = okExt || strings.EqualFold(path.Ext(p), e)
 	}
 	return okExt && path.Clean(p) == p && filepath.IsLocal(filepath.FromSlash(p))
-}
-
-// Scan lists the valid PNG assets under root, sorted by path. A missing root
-// yields an empty list. Unreadable or oversized images are skipped.
-func Scan(root string) ([]Info, error) {
-	if root == "" {
-		return nil, nil
-	}
-	if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	var out []Info
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !d.Type().IsRegular() {
-			return nil // skip symlinks, devices, unreadable entries
-		}
-		rel, rerr := filepath.Rel(root, p)
-		if rerr != nil {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		if !ValidPath(rel) {
-			return nil
-		}
-		if len(out) >= MaxAssets {
-			return fs.SkipAll
-		}
-		if cfg, cerr := config(p); cerr == nil {
-			out = append(out, Info{Path: rel, W: cfg.Width, H: cfg.Height})
-		}
-		return nil
-	})
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, err
 }
 
 func config(file string) (image.Config, error) {
@@ -102,7 +59,7 @@ func config(file string) (image.Config, error) {
 	return cfg, nil
 }
 
-// Decode loads the asset rel from root after validating the path and limits.
+// Decode loads the image rel from the project folder root after validating the path and limits.
 func Decode(root, rel string) (image.Image, error) {
 	if root == "" || !ValidPath(rel) {
 		return nil, fmt.Errorf("bad asset path %q", rel)

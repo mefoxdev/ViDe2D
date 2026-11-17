@@ -120,3 +120,20 @@ func deep(n int) string {
 	b.WriteString(`}`)
 	return b.String()
 }
+
+func TestUpgradeFromVersion1(t *testing.T) {
+	in := `{"version":1,"scene":{"name":"M","kind":"Node","script":"game.tdsl","children":[
+	  {"name":"H","kind":"Sprite","w":4,"h":4,"texture":"hero.png","script":"hero.tdsl"}]}}`
+	s, err := Unmarshal([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := s.Root.Children[0]
+	if h.Texture != "assets/hero.png" || h.Script != "scripts/hero.tdsl" || s.Root.Script != "scripts/game.tdsl" {
+		t.Fatalf("not upgraded: %+v root=%q", h, s.Root.Script)
+	}
+	out, _ := Marshal(s)
+	if !strings.Contains(string(out), `"version": 2`) {
+		t.Fatalf("not written as v2: %s", out)
+	}
+}

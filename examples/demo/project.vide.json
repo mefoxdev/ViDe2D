@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "image_mode": "pixel",
   "scene": {
     "name": "Demo",
@@ -13,7 +13,7 @@
         "w": 16,
         "h": 16,
         "color": "#5cc96b",
-        "texture": "tiles/grass.png"
+        "texture": "assets/tiles/grass.png"
       },
       {
         "name": "grass2",
@@ -23,7 +23,7 @@
         "w": 16,
         "h": 16,
         "color": "#5cc96b",
-        "texture": "tiles/grass.png"
+        "texture": "assets/tiles/grass.png"
       },
       {
         "name": "tree",
@@ -33,7 +33,7 @@
         "w": 16,
         "h": 20,
         "color": "#5cc96b",
-        "texture": "tree.png"
+        "texture": "assets/tree.png"
       },
       {
         "name": "hero",
@@ -43,9 +43,9 @@
         "w": 16,
         "h": 16,
         "color": "#4f9dff",
-        "texture": "hero.png",
+        "texture": "assets/hero.png",
         "tag": "player",
-        "script": "hero.tdsl"
+        "script": "scripts/hero.tdsl"
       },
       {
         "name": "coin",
@@ -55,7 +55,7 @@
         "w": 8,
         "h": 8,
         "color": "#f0dc4a",
-        "texture": "coin.png",
+        "texture": "assets/coin.png",
         "tag": "coin"
       },
       {
@@ -68,7 +68,7 @@
         "color": "#e2e5ec",
         "text": "Coins: 0 of 1",
         "font_size": 10,
-        "script": "score.tdsl"
+        "script": "scripts/score.tdsl"
       },
       {
         "name": "Star",
@@ -78,7 +78,7 @@
         "w": 8,
         "h": 8,
         "color": "#f0dc4a",
-        "texture": "coin.png",
+        "texture": "assets/coin.png",
         "tag": "danger",
         "template": true
       }
