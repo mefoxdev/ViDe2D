@@ -76,7 +76,7 @@ const hlMaxDepth = 16
 // в том числе недописанном и с ошибками: Parse не используется, состояние между
 // строками не нужно (многострочных конструкций в языке нет).
 func Highlight(src string) [][]Span {
-	lines := strings.Split(src, "\n")
+	lines := strings.Split(strings.TrimPrefix(src, "\uFEFF"), "\n") // BOM срезается, как в лексере
 	out := make([][]Span, len(lines))
 	for i, ln := range lines {
 		out[i] = HighlightLine(strings.TrimSuffix(ln, "\r"))

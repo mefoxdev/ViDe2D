@@ -315,6 +315,7 @@ func (*ListCmd) stmtNode()       {}
 type Number struct {
 	Pos
 	Value float64
+	Len   int // длина исходной записи в символах (0, если дерево построено вручную)
 }
 
 // TextPart — кусок текста: либо литерал Lit, либо вставка Expr (тогда Expr != nil).
@@ -327,6 +328,7 @@ type TextPart struct {
 type Text struct {
 	Pos
 	Parts []TextPart
+	Len   int // длина исходной записи вместе с кавычками в символах (0, если неизвестна)
 }
 
 // Literal возвращает содержимое текста, если в нём нет вставок.

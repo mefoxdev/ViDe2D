@@ -74,6 +74,7 @@ func sourceLine(src string, n int) (string, bool) {
 	if n < 1 {
 		return "", false
 	}
+	src = strings.TrimPrefix(src, "\uFEFF")
 	for i := 1; ; i++ {
 		var line string
 		idx := strings.IndexByte(src, '\n')

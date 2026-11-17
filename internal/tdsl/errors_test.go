@@ -43,13 +43,27 @@ func TestTD003(t *testing.T) {
 }
 
 func TestTD004(t *testing.T) {
-	e := wantError(t, "when start\n  move rigth by 5\n", "TD004", 2, 8, 13, "Я не знаю направления «rigth».", "Может быть, вы хотели «right»?")
+	// опечатка в направлении сообщается проверкой (Check): имя может быть переменной
+	src := "when start\n  move rigth by 5\n"
+	script, perrs := Parse(src)
+	if len(perrs) != 0 {
+		t.Fatalf("парсер не должен ругаться на направление: %v", perrs)
+	}
+	errs := Check(script, nil)
+	if len(errs) != 1 {
+		t.Fatalf("ожидалась одна ошибка, получено %v", errs)
+	}
+	e := errs[0]
+	if e.Code != "TD004" || e.Line != 2 || e.Col != 8 || e.EndCol != 13 ||
+		e.Message != "Я не знаю направления «rigth»." || e.Hint != "Может быть, вы хотели «right»?" {
+		t.Fatalf("неверная ошибка: %+v", e)
+	}
 	want := "Проблема в hero.tdsl, строка 2 (TD004):\n\n" +
 		"      move rigth by 5\n" +
 		"           ^^^^^\n" +
 		"Я не знаю направления «rigth». Может быть, вы хотели «right»?\n"
 	e.File = "hero.tdsl"
-	if got := e.Format("when start\n  move rigth by 5\n"); got != want {
+	if got := e.Format(src); got != want {
 		t.Errorf("Format:\n%s\nожидалось:\n%s", got, want)
 	}
 	// опечатка в команде, событии и слове верхнего уровня
@@ -88,7 +102,7 @@ func TestTD006(t *testing.T) {
 }
 
 func TestMultipleErrors(t *testing.T) {
-	src := "when start\n  move rigth by 5\n  pritn 1\n  print 2\nwhen strat\n  print 3\n"
+	src := "when start\n  pritm 5\n  pritn 1\n  print 2\nwhen strat\n  print 3\n"
 	_, errs := Parse(src)
 	if len(errs) != 3 {
 		t.Fatalf("ожидалось 3 ошибки, получено %v", errs)

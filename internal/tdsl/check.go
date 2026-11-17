@@ -429,7 +429,7 @@ func (c *checker) checkHandler(h *Handler) {
 			c.want(h.Arg, t, tyText, "Сообщение в «when message»")
 		case EventTouch, EventStopTouching:
 			if t != tyUnknown && t != tyText && t != tyObj {
-				c.want(h.Arg, t, tyText, "После «touch» нужна метка в кавычках или объект; здесь")
+				c.addExpr(CodeWrongType, h.Arg, "После «touch» ожидается метка в кавычках или объект, а тут "+typeNom[t]+".", "")
 			}
 		}
 	}
@@ -489,7 +489,7 @@ func (c *checker) stmt(s Stmt) {
 		c.block(n.Else)
 	case *Repeat:
 		if n.Count != nil {
-			c.want(n.Count, c.expr(n.Count), tyNum, "Сколько раз повторять («repeat … times»)")
+			c.want(n.Count, c.expr(n.Count), tyNum, "Число повторений в «repeat … times»")
 		}
 		c.block(n.Body)
 	case *While:
@@ -497,7 +497,7 @@ func (c *checker) stmt(s Stmt) {
 		c.block(n.Body)
 	case *For:
 		if n.List != nil {
-			c.want(n.List, c.expr(n.List), tyList, "После «in» нужен список; здесь")
+			c.want(n.List, c.expr(n.List), tyList, "После «in»")
 		} else {
 			if n.From != nil {
 				c.want(n.From, c.expr(n.From), tyNum, "Начало диапазона")
@@ -515,6 +515,9 @@ func (c *checker) stmt(s Stmt) {
 	case *ExprStmt:
 		c.expr(n.X)
 	case *Move:
+		if c.dirTypo(n.Dir) {
+			break
+		}
 		t := c.expr(n.Dir)
 		c.want(n.Dir, t, tyDir, "Направление в «move»")
 		c.want(n.By, c.expr(n.By), tyNum, "Шаг в «move … by»")
@@ -536,7 +539,7 @@ func (c *checker) stmt(s Stmt) {
 		c.want(n.By, c.expr(n.By), tyNum, "Угол в «turn by»")
 	case *Destroy:
 		if n.Target != nil {
-			c.want(n.Target, c.expr(n.Target), tyObj, "После «destroy» нужен объект; здесь")
+			c.want(n.Target, c.expr(n.Target), tyObj, "После «destroy»")
 		}
 	case *Play:
 		t := c.expr(n.What)
@@ -554,7 +557,7 @@ func (c *checker) stmt(s Stmt) {
 			c.expr(n.With)
 		}
 		if n.To != nil {
-			c.want(n.To, c.expr(n.To), tyObj, "После «send … to» нужен объект; здесь")
+			c.want(n.To, c.expr(n.To), tyObj, "После «send … to»")
 		}
 	case *Wait:
 		c.want(n.Duration, c.expr(n.Duration), tyNum, "Время в «wait»")
@@ -577,8 +580,29 @@ func (c *checker) stmt(s Stmt) {
 		if n.Item != nil {
 			c.expr(n.Item)
 		}
-		c.want(n.List, c.expr(n.List), tyList, "Тут нужен список; здесь")
+		c.want(n.List, c.expr(n.List), tyList, "В этой команде")
 	}
+}
+
+// dirTypo сообщает TD004, если в позиции направления стоит имя, похожее на left/right/up/down,
+// которое нигде не объявлено (ни переменная, ни параметр, ни цикл, ни объект, ни свойство).
+// Грамматика разрешает здесь любое имя, поэтому это только подсказка об опечатке.
+// В библиотеке команд (нет обработчиков) переменные приходят от объекта-хозяина — молчим.
+func (c *checker) dirTypo(e Expr) bool {
+	id, ok := e.(*Ident)
+	if !ok || c.libMode || rl(id.Name) < 3 {
+		return false
+	}
+	name := id.Name
+	if c.declared(name) || c.allVars[name] || contains(c.env.Objects, name) || objectProps[name] != tyUnknown || name == "mouse" {
+		return false
+	}
+	s := suggest(name, directions, 1)
+	if s == "" {
+		return false
+	}
+	c.addName(CodeUnknownWord, id.Pos, name, "Я не знаю направления «"+name+"».", didYouMean(s))
+	return true
 }
 
 func (c *checker) assign(n *Assign) {
@@ -604,13 +628,13 @@ func (c *checker) assign(n *Assign) {
 	switch n.Op {
 	case "=":
 		if tt != tyUnknown && vt != tyUnknown && vt != tyNothing && tt != vt {
-			c.addExpr(CodeWrongType, n.Value, "Сюда нужно "+typeAcc[tt]+", а тут "+typeNom[vt]+".", "")
+			c.addExpr(CodeWrongType, n.Value, "Здесь хранится "+typeNom[tt]+", а записывается "+typeNom[vt]+".", "")
 		}
 	case "+=":
 		c.arith("+", tt, vt, n.Target, n.Value, n.Value)
 	default:
-		c.want(n.Target, tt, tyNum, "Для «"+n.Op+"» нужно число; в переменной")
-		c.want(n.Value, vt, tyNum, "Для «"+n.Op+"» нужно число; здесь")
+		c.want(n.Target, tt, tyNum, "Слева от «"+n.Op+"»")
+		c.want(n.Value, vt, tyNum, "Справа от «"+n.Op+"»")
 	}
 }
 
@@ -638,7 +662,7 @@ func (c *checker) want(e Expr, got, want vtype, ctx string) {
 	if want == tyObj && got == tyNothing {
 		return
 	}
-	c.addExpr(CodeWrongType, e, ctx+": нужно "+typeAcc[want]+", а тут "+typeNom[got]+".", wrongTypeHint(want, got))
+	c.addExpr(CodeWrongType, e, ctx+": ожидается "+typeAcc[want]+", а тут "+typeNom[got]+".", wrongTypeHint(want, got))
 }
 
 func wrongTypeHint(want, got vtype) string {

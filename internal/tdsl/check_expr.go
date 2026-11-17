@@ -48,12 +48,12 @@ func (c *checker) expr(e Expr) vtype {
 			c.wantCond(n.X, t)
 			return tyBool
 		}
-		c.want(n.X, t, tyNum, "Минус ставят перед числом")
+		c.want(n.X, t, tyNum, "После минуса")
 		return tyNum
 	case *Binary:
 		return c.binary(n)
 	case *PerSecond:
-		c.want(n.X, c.expr(n.X), tyNum, "«per second» применяется к числу")
+		c.want(n.X, c.expr(n.X), tyNum, "Перед «per second»")
 		return tyNum
 	case *Member:
 		return c.member(n)
@@ -158,8 +158,8 @@ func (c *checker) binary(n *Binary) vtype {
 	case "+":
 		return c.arith("+", l, r, n.L, n.R, n)
 	case "-", "*", "/", "%":
-		c.want(n.L, l, tyNum, "Для «"+n.Op+"» нужно число")
-		c.want(n.R, r, tyNum, "Для «"+n.Op+"» нужно число")
+		c.want(n.L, l, tyNum, "Для «"+n.Op+"»")
+		c.want(n.R, r, tyNum, "Для «"+n.Op+"»")
 		return tyNum
 	case "is", "is not":
 		c.sameTypes(n, l, r)
@@ -275,7 +275,7 @@ func (c *checker) call(n *Call) vtype {
 	}
 	for i, a := range n.Args {
 		if i < len(sig.args) && sig.args[i] != tyUnknown {
-			c.want(a, ts[i], sig.args[i], "В «"+n.Name+"»")
+			c.want(a, ts[i], sig.args[i], "Для «"+n.Name+"»")
 		}
 	}
 	return sig.ret
@@ -418,8 +418,14 @@ func endOf(e Expr) (line, col int) {
 	p := e.Position()
 	switch n := e.(type) {
 	case *Number:
+		if n.Len > 0 {
+			return p.Line, p.Col + n.Len
+		}
 		return p.Line, p.Col + rl(strconv.FormatFloat(n.Value, 'g', -1, 64))
 	case *Text:
+		if n.Len > 0 {
+			return p.Line, p.Col + n.Len
+		}
 		w := 2
 		for _, part := range n.Parts {
 			if part.Expr != nil {

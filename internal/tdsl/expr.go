@@ -30,9 +30,29 @@ func (p *parser) parseExpr() Expr {
 	return x
 }
 
+// maxChain — предел длины цепочки одинаковых по приоритету операций («1+1+1+...»);
+// maxOps — предел числа операций в одной команде. Дерево таких цепочек — левая
+// «лесенка», а обходчики дерева рекурсивны: без предела переполнился бы стек.
+const (
+	maxChain = 10000
+	maxOps   = 50000
+)
+
+// chainStep учитывает ещё одну операцию в цепочке; n — счётчик цепочки.
+func (p *parser) chainStep(n *int) {
+	*n++
+	p.ops++
+	if *n > maxChain || p.ops > maxOps {
+		p.fail(p.tok(), CodeExpected, "Выражение слишком длинное: слишком много операций подряд.",
+			"Разбейте его на несколько команд через промежуточные переменные.")
+	}
+}
+
 func (p *parser) parseOr() Expr {
 	x := p.parseAnd()
+	n := 0
 	for p.isKw("or") {
+		p.chainStep(&n)
 		p.next()
 		x = &Binary{Pos: x.Position(), Op: "or", L: x, R: p.parseAnd()}
 	}
@@ -41,7 +61,9 @@ func (p *parser) parseOr() Expr {
 
 func (p *parser) parseAnd() Expr {
 	x := p.parseNot()
+	n := 0
 	for p.isKw("and") {
+		p.chainStep(&n)
 		p.next()
 		x = &Binary{Pos: x.Position(), Op: "and", L: x, R: p.parseNot()}
 	}
@@ -78,7 +100,9 @@ func (p *parser) parseCompare() Expr {
 
 func (p *parser) parseAdditive() Expr {
 	x := p.parseTerm()
+	n := 0
 	for p.isOp("+") || p.isOp("-") {
+		p.chainStep(&n)
 		op := p.next().text
 		x = &Binary{Pos: x.Position(), Op: op, L: x, R: p.parseTerm()}
 	}
@@ -92,7 +116,9 @@ func (p *parser) parseAdditive() Expr {
 
 func (p *parser) parseTerm() Expr {
 	x := p.parseUnary()
+	n := 0
 	for p.isOp("*") || p.isOp("/") || p.isOp("%") {
+		p.chainStep(&n)
 		op := p.next().text
 		x = &Binary{Pos: x.Position(), Op: op, L: x, R: p.parseUnary()}
 	}
@@ -112,9 +138,11 @@ func (p *parser) parseUnary() Expr {
 
 func (p *parser) parsePostfix() Expr {
 	x := p.parsePrimary()
+	n := 0
 	for {
 		switch {
 		case p.isOp("."):
+			p.chainStep(&n)
 			p.next()
 			t := p.tok()
 			if !t.isWord() {
@@ -123,6 +151,7 @@ func (p *parser) parsePostfix() Expr {
 			p.next()
 			x = &Member{Pos: x.Position(), X: x, Name: t.text}
 		case p.isOp("["):
+			p.chainStep(&n)
 			open := p.next()
 			saved := p.noIn
 			p.noIn = false
@@ -142,7 +171,7 @@ func (p *parser) parsePrimary() Expr {
 	switch t.kind {
 	case tNumber:
 		p.next()
-		return &Number{Pos: pos, Value: t.num}
+		return &Number{Pos: pos, Value: t.num, Len: t.endCol - t.col}
 	case tText:
 		p.next()
 		return p.textExpr(t)
@@ -196,6 +225,12 @@ func (p *parser) parsePrimary() Expr {
 		case "spawn":
 			p.next()
 			return p.parseSpawn(t)
+		case "round":
+			// «round(x)» — встроенная функция; «next round» разбирает parseCommand
+			if p.peek(1).is(tOp, "(") {
+				p.next()
+				return p.parseCall(t)
+			}
 		}
 	}
 	if t.kind == tNL || t.kind == tEOF {
@@ -229,7 +264,7 @@ func (p *parser) parseExprList(open token, closer string) []Expr {
 			if !p.isOp(",") {
 				break
 			}
-			p.next()
+			p.noTrailingComma(p.next(), closer)
 		}
 	}
 	p.noIn = saved
@@ -237,16 +272,23 @@ func (p *parser) parseExprList(open token, closer string) []Expr {
 	return out
 }
 
+// noTrailingComma: после запятой comma сразу стоит закрывающая скобка — лишняя запятая.
+func (p *parser) noTrailingComma(comma token, closer string) {
+	if p.isOp(closer) {
+		p.fail(comma, CodeExpected, "После запятой нужно значение — уберите запятую.", "")
+	}
+}
+
 // textExpr превращает токен текста в узел; вставки «{...}» разбираются в выражения.
 func (p *parser) textExpr(t token) *Text {
-	out := &Text{Pos: t.pos()}
+	out := &Text{Pos: t.pos(), Len: t.endCol - t.col}
 	for _, part := range t.parts {
 		if !part.isExpr {
 			out.Parts = append(out.Parts, TextPart{Lit: part.lit})
 			continue
 		}
 		toks := lexInline(p.s, part.src, part.line, part.col-1, part.depth)
-		sub := &parser{s: p.s, toks: toks, depth: p.depth}
+		sub := &parser{s: p.s, toks: toks, depth: p.depth, ops: p.ops}
 		var e Expr
 		if sub.try(func() {
 			e = sub.parseExpr()

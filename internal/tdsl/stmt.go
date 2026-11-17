@@ -22,6 +22,7 @@ func isAssignOp(t token) bool {
 
 // parseStatement разбирает одну команду или конструкцию вместе с концом строки / блоком.
 func (p *parser) parseStatement() Stmt {
+	p.ops = 0
 	t := p.tok()
 	switch t.kind {
 	case tKeyword:
@@ -152,11 +153,7 @@ func (p *parser) parseDirExpr() Expr {
 			}
 		}
 	case tName:
-		if len([]rune(t.text)) >= 3 {
-			if s := suggest(t.text, directions, 1); s != "" {
-				p.fail(t, CodeUnknownWord, "Я не знаю направления «"+t.text+"».", didYouMean(s))
-			}
-		}
+		// Опечатку в направлении («rigth») определяет Check: имя может быть переменной.
 		p.next()
 		return &Ident{Pos: t.pos(), Name: t.text}
 	}

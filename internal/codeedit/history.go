@@ -98,12 +98,20 @@ func (b *Buffer) end() {
 	b.trim()
 }
 
+// trim ограничивает историю по числу шагов и суммарному объёму. Если после этого
+// остался один шаг, превышающий maxUndoCost сам по себе (например, вставка ~1 МБ),
+// он не хранится: пропустить один шаг нельзя (прежние шаги применялись бы к чужому
+// тексту), поэтому история очищается целиком — отменить такую правку невозможно.
 func (b *Buffer) trim() {
 	for len(b.undo) > 1 && (len(b.undo) > maxUndoSteps || b.undoCost > maxUndoCost) {
 		b.trimmed = true
 		b.undoCost -= b.undo[0].cost
 		b.undo[0] = nil
 		b.undo = b.undo[1:]
+	}
+	if len(b.undo) == 1 && b.undoCost > maxUndoCost {
+		b.trimmed = true
+		b.undo, b.undoCost = nil, 0
 	}
 }
 

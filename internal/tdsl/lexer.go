@@ -9,6 +9,8 @@ import (
 const (
 	maxDepth  = 64 // максимальная вложенность блоков, выражений и текстов со вставками
 	maxErrors = 20 // после стольких ошибок разбор останавливается
+
+	maxSourceSize = 2 << 20 // больше байт Parse не разбирает (одна ошибка TD005)
 )
 
 // haltPanic — внутренний сигнал «останавливаем разбор» (слишком много ошибок или
@@ -18,6 +20,16 @@ type haltPanic struct{}
 // sink собирает ошибки лексера и парсера.
 type sink struct {
 	errs []*Error
+	lex  map[*Error]bool // ошибки лексера (см. finishErrors)
+}
+
+// addLex добавляет ошибку лексера.
+func (s *sink) addLex(e *Error) {
+	if s.lex == nil {
+		s.lex = map[*Error]bool{}
+	}
+	s.lex[e] = true
+	s.add(e)
 }
 
 func (s *sink) add(e *Error) {
@@ -131,7 +143,7 @@ func (l *lexer) eof() {
 }
 
 func (l *lexer) errAt(code string, line, col, endCol int, msg, hint string) {
-	l.s.add(&Error{Code: code, Line: line, Col: col + l.colOff, EndCol: endCol + l.colOff, Message: msg, Hint: hint})
+	l.s.addLex(&Error{Code: code, Line: line, Col: col + l.colOff, EndCol: endCol + l.colOff, Message: msg, Hint: hint})
 }
 
 func (l *lexer) emit(kind tokKind, text string, line, from, to int) *token {

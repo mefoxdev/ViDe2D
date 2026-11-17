@@ -19,6 +19,7 @@ package codeedit
 import (
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -198,7 +199,11 @@ func (b *Buffer) ClampCursor() {
 }
 
 // sanitize нормализует вставляемый текст: CRLF/CR -> LF, таб -> 2 пробела,
-// прочие управляющие символы отбрасываются.
+// «пробельные» символы Юникода (NBSP, U+2000..200A, U+3000 ...) -> обычный пробел,
+// U+2028/U+2029/U+0085 -> перевод строки, символы нулевой ширины и BOM
+// (U+200B..200D, U+2060, U+FEFF) и прочие управляющие символы отбрасываются.
+// Так в тексте не остаётся невидимых символов, на которые лексер TrueDSL
+// ответил бы «Неожиданный символ».
 func sanitize(s string) []rune {
 	out := make([]rune, 0, len(s))
 	for i := 0; i < len(s); {
@@ -214,8 +219,14 @@ func sanitize(s string) []rune {
 			out = append(out, '\n')
 		case r == '\t':
 			out = append(out, ' ', ' ')
-		case r < 0x20 || r == 0x7f:
-			// отбрасываем
+		case r == 0x85 || r == 0x2028 || r == 0x2029:
+			out = append(out, '\n')
+		case r == 0x200B || r == 0x200C || r == 0x200D || r == 0x2060 || r == 0xFEFF || r == 0x180E:
+			// нулевая ширина и BOM: отбрасываем
+		case unicode.Is(unicode.Zs, r):
+			out = append(out, ' ')
+		case r < 0x20 || (r >= 0x7f && r < 0xa0):
+			// управляющие: отбрасываем
 		default:
 			out = append(out, r)
 		}

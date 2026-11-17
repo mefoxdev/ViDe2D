@@ -449,7 +449,7 @@ func cmStripCode(line string) string {
 // Результат: не более 50 штук; сначала совпадающие по началу (без учёта регистра),
 // затем содержащие префикс, внутри групп — по алфавиту. Insert заменяет слово под курсором.
 func Complete(src string, line, col int, env *CompleteEnv) []Completion {
-	lines := strings.Split(src, "\n")
+	lines := strings.Split(strings.TrimPrefix(src, "\uFEFF"), "\n") // BOM срезается, как в лексере
 	if line < 0 || line >= len(lines) {
 		return nil
 	}

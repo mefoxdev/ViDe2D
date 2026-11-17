@@ -158,6 +158,17 @@ func (b *Buffer) DeleteSelection() bool {
 // `# …` не учитывается) — получает ещё +2 пробела. Выделение заменяется.
 func (b *Buffer) Enter() {
 	b.ensure()
+	// Лимиты проверяем до любых изменений: иначе пробелы слева от курсора были бы
+	// стёрты, а перевод строки отвергнут (текст изменился бы без вставки).
+	s, e := b.cur, b.cur
+	if rs, re, ok := b.selRange(); ok {
+		s, e = rs, re
+	}
+	s, e = b.clamp(s), b.clamp(e)
+	if len(b.lines)-(e.Line-s.Line) >= MaxLines || b.bytes-bytesOf(b.textRange(s, e)) >= MaxBytes {
+		b.truncated = true
+		return
+	}
 	b.begin("enter")
 	b.deleteSel()
 	line := b.lines[b.cur.Line]

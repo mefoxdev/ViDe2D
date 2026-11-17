@@ -14,6 +14,7 @@ type parser struct {
 	pos   int
 	depth int
 	noIn  bool // «in» не оператор (нужно в «slide to x, y in 2 seconds»)
+	ops   int  // число операций в текущей команде (см. maxOps)
 }
 
 // Parse разбирает исходный текст .tdsl. Возвращает дерево (возможно, неполное при ошибках)
@@ -29,14 +30,24 @@ func Parse(src string) (*Script, []*Error) {
 				}
 			}
 		}()
+		if len(src) > maxSourceSize {
+			s.add(&Error{Code: CodeExpected, Line: 1, Col: 1, EndCol: 2,
+				Message: "Файл слишком большой: больше 2 МБ.",
+				Hint:    "Разделите скрипт на несколько файлов и подключите их через «use»."})
+			return
+		}
 		p := &parser{s: s, toks: lexSource(s, src)}
 		p.parseScript(script)
 	}()
-	return script, finishErrors(s.errs)
+	return script, finishErrors(s)
 }
 
-// finishErrors сортирует ошибки и оставляет первую ошибку в каждой строке.
-func finishErrors(errs []*Error) []*Error {
+// finishErrors сортирует ошибки и оставляет по одной на строку: лексическую
+// (неожиданный символ, незакрытая кавычка, отступ), если она есть, иначе самую левую.
+// Лексическая первичнее: после неё лексер пропускает символ, и парсер на той же строке
+// сообщает уже вторичную ошибку («ожидалось значение»).
+func finishErrors(s *sink) []*Error {
+	errs := s.errs
 	if len(errs) == 0 {
 		return nil
 	}
@@ -48,7 +59,10 @@ func finishErrors(errs []*Error) []*Error {
 	})
 	out := errs[:0]
 	for _, e := range errs {
-		if len(out) > 0 && out[len(out)-1].Line == e.Line {
+		if n := len(out); n > 0 && out[n-1].Line == e.Line {
+			if s.lex[e] && !s.lex[out[n-1]] {
+				out[n-1] = e
+			}
 			continue
 		}
 		out = append(out, e)
@@ -304,6 +318,7 @@ func (p *parser) unexpectedIndent() {
 }
 
 func (p *parser) parseItem() Item {
+	p.ops = 0
 	t := p.tok()
 	if t.kind == tKeyword {
 		switch t.text {
@@ -372,7 +387,7 @@ func (p *parser) parseActionDef() *ActionDef {
 			if !p.isOp(",") {
 				break
 			}
-			p.next()
+			p.noTrailingComma(p.next(), ")")
 		}
 	}
 	p.closeBracket(open, ")", true)
