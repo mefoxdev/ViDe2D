@@ -84,12 +84,26 @@ type Scene struct {
 	// unloaded while the game runs) and is distributed with the status
 	// "optimized". When false the map may be any layout and is loaded whole.
 	Optimization bool
+	// ViewW and ViewH are the size of the visible game world in pixels (scenes
+	// only); TickRate is the simulation rate in Hz (60, 90 or 120).
+	ViewW, ViewH int
+	TickRate     int
 	nextID       int
 }
 
+// Defaults for the scene view and the simulation rate.
+const (
+	DefaultViewW    = 320
+	DefaultViewH    = 180
+	DefaultTickRate = 60
+)
+
+// ValidTickRate reports whether hz is a supported simulation rate.
+func ValidTickRate(hz int) bool { return hz == 60 || hz == 90 || hz == 120 }
+
 // New creates a scene with a root node.
 func New(rootName string) *Scene {
-	s := &Scene{ImageMode: ImagePixel, Type: DocScene, TileSize: DefaultTileSize}
+	s := &Scene{ImageMode: ImagePixel, Type: DocScene, TileSize: DefaultTileSize, ViewW: DefaultViewW, ViewH: DefaultViewH, TickRate: DefaultTickRate}
 	s.Root = s.newNode(KindNode, rootName)
 	return s
 }

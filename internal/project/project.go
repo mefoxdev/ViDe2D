@@ -27,7 +27,9 @@ import (
 //
 // Version 3 adds the document type (scene, object or map), tile_size, the
 // scene's map, instances of objects and map chunks. Older files are scenes.
-const Version = 3
+//
+// Version 4 adds the scene's view (size of the visible world) and tick_rate.
+const Version = 4
 
 const (
 	maxDepth = 64
@@ -46,8 +48,18 @@ type file struct {
 	Map       string `json:"map,omitempty"`
 	// Optimization is a map parameter; a map file without it is optimized.
 	Optimization *bool `json:"optimization,omitempty"`
-	Scene        *node `json:"scene"`
+	// View and TickRate are scene parameters; missing values mean 320×180 and 60.
+	View     *view `json:"view,omitempty"`
+	TickRate int   `json:"tick_rate,omitempty"`
+	Scene    *node `json:"scene"`
 }
+
+type view struct {
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+const maxView = 16384
 
 type node struct {
 	Name     string  `json:"name"`
@@ -70,7 +82,11 @@ type node struct {
 
 // Marshal serializes a scene.
 func Marshal(s *scene.Scene) ([]byte, error) {
-	return json.MarshalIndent(file{Version: Version, Type: string(s.Type), ImageMode: string(s.ImageMode), TileSize: s.TileSize, Map: s.Map, Optimization: mapOpt(s), Scene: toNode(s.Root)}, "", "  ")
+	f := file{Version: Version, Type: string(s.Type), ImageMode: string(s.ImageMode), TileSize: s.TileSize, Map: s.Map, Optimization: mapOpt(s), Scene: toNode(s.Root)}
+	if s.Type == scene.DocScene {
+		f.View, f.TickRate = &view{s.ViewW, s.ViewH}, s.TickRate
+	}
+	return json.MarshalIndent(f, "", "  ")
 }
 
 func mapOpt(s *scene.Scene) *bool {
@@ -130,6 +146,23 @@ func Unmarshal(data []byte) (*scene.Scene, error) {
 		s.Optimization = f.Optimization == nil || *f.Optimization // default: optimized
 	} else if f.Optimization != nil {
 		return nil, errors.New("invalid project file: only maps have the optimization parameter")
+	}
+	if f.View != nil || f.TickRate != 0 {
+		if s.Type != scene.DocScene {
+			return nil, errors.New("invalid project file: only scenes have view and tick_rate")
+		}
+		if v := f.View; v != nil {
+			if v.W < 1 || v.W > maxView || v.H < 1 || v.H > maxView {
+				return nil, fmt.Errorf("invalid project file: bad view %dx%d", v.W, v.H)
+			}
+			s.ViewW, s.ViewH = v.W, v.H
+		}
+		if f.TickRate != 0 {
+			if !scene.ValidTickRate(f.TickRate) {
+				return nil, fmt.Errorf("invalid project file: tick_rate must be 60, 90 or 120, got %d", f.TickRate)
+			}
+			s.TickRate = f.TickRate
+		}
 	}
 	if f.TileSize != 0 {
 		if f.TileSize < 1 || f.TileSize > 256 {

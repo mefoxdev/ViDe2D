@@ -133,8 +133,8 @@ func TestUpgradeFromVersion1(t *testing.T) {
 		t.Fatalf("not upgraded: %+v root=%q", h, s.Root.Script)
 	}
 	out, _ := Marshal(s)
-	if !strings.Contains(string(out), `"version": 3`) {
-		t.Fatalf("not written as v3: %s", out)
+	if !strings.Contains(string(out), `"version": 4`) {
+		t.Fatalf("not written as v4: %s", out)
 	}
 }
 
@@ -261,5 +261,37 @@ func TestStatusOptimized(t *testing.T) {
 	m.Add(nil, scene.KindNode, "loose")
 	if m.Status() != "" {
 		t.Fatal("loose objects outside chunks must lose the status")
+	}
+}
+
+func TestSceneViewAndTickRate(t *testing.T) {
+	s := scene.New("S")
+	if s.ViewW != 320 || s.ViewH != 180 || s.TickRate != 60 {
+		t.Fatalf("bad defaults: %dx%d @%d", s.ViewW, s.ViewH, s.TickRate)
+	}
+	s.ViewW, s.ViewH, s.TickRate = 640, 360, 120
+	data, err := Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Unmarshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ViewW != 640 || got.ViewH != 360 || got.TickRate != 120 {
+		t.Fatalf("round trip lost view/tick_rate: %dx%d @%d", got.ViewW, got.ViewH, got.TickRate)
+	}
+	for _, bad := range []string{
+		`{"version":4,"tick_rate":75,"scene":{"name":"S","kind":"Node"}}`,
+		`{"version":4,"view":{"w":0,"h":10},"scene":{"name":"S","kind":"Node"}}`,
+		`{"version":4,"type":"object","tick_rate":60,"scene":{"name":"S","kind":"Node"}}`,
+	} {
+		if _, err := Unmarshal([]byte(bad)); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	old, err := Unmarshal([]byte(`{"version":3,"scene":{"name":"S","kind":"Node"}}`))
+	if err != nil || old.ViewW != 320 || old.TickRate != 60 {
+		t.Fatalf("v3 file should get defaults: %v", err)
 	}
 }
