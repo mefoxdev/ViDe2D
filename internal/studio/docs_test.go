@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/vide2d/vide-studio/internal/project"
 	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/scene"
 )
@@ -300,5 +301,54 @@ func TestTailBufferKeepsEnd(t *testing.T) {
 	b.Write([]byte("defgh"))
 	if got := b.String(); got != "defgh" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAliveFlagOnlyInsideMapChunks(t *testing.T) {
+	s := newTestStudio(t)
+	if err := s.newDocFile(scene.DocMap, "World"); err != nil {
+		t.Fatal(err)
+	}
+	chunk := s.scene.Root.Children[0]
+	cow := s.scene.Add(chunk, scene.KindSprite, "Cow")
+	group := s.scene.Add(chunk, scene.KindNode, "Herd")
+	kid := s.scene.Add(group, scene.KindSprite, "Calf")
+	text := s.scene.Add(chunk, scene.KindText, "Sign")
+	house := s.scene.Add(chunk, scene.KindInstance, "House")
+	house.Ref = "game/objects/house.vide.json"
+	for _, n := range []*scene.Node{cow, group, kid, text, house} {
+		if !scene.CanBeAlive(n) {
+			t.Errorf("%s inside a chunk must be allowed to be alive (the inspector shows the checkbox)", n.Name)
+		}
+	}
+	if scene.CanBeAlive(chunk) || scene.CanBeAlive(s.scene.Root) {
+		t.Error("chunks and the map root cannot be alive")
+	}
+	cow.Alive, kid.Alive = true, true
+
+	// the flag survives a save and a load
+	data, err := project.Marshal(s.scene)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := project.Unmarshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := back.Root.Children[0]
+	if !c.Children[0].Alive || c.Children[1].Alive || !c.Children[1].Children[0].Alive {
+		t.Fatal("alive flags did not round-trip")
+	}
+
+	// a node dragged out of its chunk is not alive any more where it matters: the file stays valid
+	s.scene.Optimization = false
+	s.scene.Reparent(cow, s.scene.Root)
+	if scene.CanBeAlive(cow) {
+		t.Fatal("a node outside chunks must not be allowed to be alive")
+	}
+	if data, err = project.Marshal(s.scene); err != nil {
+		t.Fatal(err)
+	} else if _, err = project.Unmarshal(data); err != nil {
+		t.Fatalf("the saved file must load: %v", err)
 	}
 }

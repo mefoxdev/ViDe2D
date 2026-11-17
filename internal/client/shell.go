@@ -61,11 +61,11 @@ func (s *Shell) Rescan() {
 func (s *Shell) Update() error {
 	if s.running != nil {
 		if s.leaveRequested() {
-			s.running = nil
+			s.stop()
 			return nil
 		}
 		if err := s.running.Update(); err != nil {
-			s.running = nil // Termination or a game error: back to the list
+			s.stop() // Termination or a game error: back to the list
 			if err != ebiten.Termination {
 				s.status = err.Error()
 			}
@@ -136,6 +136,21 @@ func (s *Shell) leaveRequested() bool {
 	}
 	return true
 }
+
+// stop leaves the running game: it is closed (its memory saved, its sounds
+// stopped) if it can be, then the list comes back.
+func (s *Shell) stop() {
+	g := s.running
+	s.running = nil
+	if c, ok := g.(interface{ Close() error }); ok {
+		if err := c.Close(); err != nil {
+			s.status = "The game's memory was not saved: " + err.Error()
+		}
+	}
+}
+
+// Close leaves the running game, if any. Call it when the window closes.
+func (s *Shell) Close() { s.stop() }
 
 func (s *Shell) launch(i int) {
 	g, err := s.Launcher.Launch(s.entries[i])

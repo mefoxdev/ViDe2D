@@ -23,9 +23,9 @@ func write(t *testing.T, root, rel, content string) {
 	}
 }
 
-// doc builds a version 4 document of the given type around nodes JSON.
+// doc builds a version 5 document of the given type around nodes JSON.
 func doc(typ, extra, rootKids string) string {
-	return fmt.Sprintf(`{"version":4,"type":%q,%s"scene":{"name":"R","kind":"Node","children":[%s]}}`, typ, extra, rootKids)
+	return fmt.Sprintf(`{"version":5,"type":%q,%s"scene":{"name":"R","kind":"Node","children":[%s]}}`, typ, extra, rootKids)
 }
 
 func sprite(name string, x, y int, extra string) string {

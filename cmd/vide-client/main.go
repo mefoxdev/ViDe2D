@@ -36,7 +36,9 @@ func main() {
 	ebiten.SetWindowSize(960, 600)
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	sh := client.NewShell(*dir, client.ForPlatform(goruntime.GOOS))
-	if err := ebiten.RunGame(sh); err != nil {
+	err := ebiten.RunGame(sh)
+	sh.Close() // a game running inside the window: save its memory, stop its sound
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "vide-client:", err)
 		os.Exit(1)
 	}

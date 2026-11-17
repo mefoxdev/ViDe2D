@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,7 +13,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/tdsl/vm"
@@ -54,6 +59,9 @@ func toJSON(v vm.Value, depth int, budget *int) (any, error) {
 		}
 		return v.N, nil
 	case vm.KText:
+		if why := badText(v.S, true); why != "" {
+			return nil, fmt.Errorf("в тексте %s", why)
+		}
 		return v.S, nil
 	case vm.KBool:
 		return v.IsTrue(), nil
@@ -72,6 +80,22 @@ func toJSON(v vm.Value, depth int, budget *int) (any, error) {
 		return out, nil
 	}
 	return nil, fmt.Errorf("этот вид значения не запоминается")
+}
+
+// badText says what is wrong with a text that is to be stored ("" if
+// nothing): not valid UTF-8 (JSON would silently change it, so a round trip
+// would not give the same text) or control characters. A value may hold
+// newlines and tabs; a key may not.
+func badText(s string, allowLayout bool) string {
+	if !utf8.ValidString(s) {
+		return "есть байты, которые не являются текстом UTF-8"
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) && !(allowLayout && (r == '\n' || r == '\t')) {
+			return "есть служебные символы"
+		}
+	}
+	return ""
 }
 
 // fromJSON is the reverse; it accepts only what toJSON makes.
@@ -106,13 +130,27 @@ func fromJSON(x any, depth int, budget *int) (vm.Value, bool) {
 	return vm.Value{}, false
 }
 
-// sizeOf is the number of bytes a key and its value take in the store.
+// encodeJSON is the one encoder of the store: what it measures is what the
+// file holds (no HTML escaping, no trailing newline).
+func encodeJSON(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(b.Bytes(), "\n"), nil
+}
+
+// sizeOf is the number of bytes a key and its value take in the file: the
+// encoded key and the encoded value, the same bytes the file gets.
 func sizeOf(key string, enc any) int {
-	b, err := json.Marshal(enc)
-	if err != nil {
+	k, err1 := encodeJSON(key)
+	b, err2 := encodeJSON(enc)
+	if err1 != nil || err2 != nil {
 		return 1 << 30
 	}
-	return len(key) + len(b)
+	return len(k) + len(b)
 }
 
 // MemStore is a Store in memory: the default of a world, and the fake of tests.
@@ -142,10 +180,18 @@ func (m *MemStore) Set(key string, v vm.Value) (int, error) {
 	if key == "" || len([]rune(key)) > MaxStoreKeyChars {
 		return 0, storeErr(fmt.Sprintf("Ключ в «remember» — непустой текст не длиннее %d символов.", MaxStoreKeyChars))
 	}
+	if why := badText(key, false); why != "" {
+		return 0, &vm.HostError{Code: vm.CodeWrongType, Message: "Ключ в «remember»: " + why + ".",
+			Hint: "Ключ — обычный текст из букв, цифр и знаков, например \"best_score\"."}
+	}
 	budget := MaxStoreBytes
 	enc, err := toJSON(v, 0, &budget)
 	work := MaxStoreBytes - budget
 	if err != nil {
+		if strings.Contains(err.Error(), "в тексте") {
+			return work, &vm.HostError{Code: vm.CodeWrongType, Message: "Это значение не запомнить: " + err.Error() + ".",
+				Hint: "Запоминайте обычный текст (переводы строк и табуляция можно)."}
+		}
 		return work, storeErr("Это значение не запомнить: " + err.Error() + ".")
 	}
 	size := sizeOf(key, enc)
@@ -186,12 +232,39 @@ func (m *MemStore) Keys() []string {
 
 // FileStore is a MemStore saved as a JSON file in a folder of the user's own
 // (not in the project: the game must not be able to reach it by a path). The
-// file is read and written through projfs (no links, atomic write, bounded).
+// file is read and written through projfs (no links, atomic write, bounded,
+// permissions 0600).
+//
+// Writing never blocks the game loop. Flush encodes the changes and hands the
+// newest snapshot to a single background writer; snapshots made while it is
+// busy replace each other (only the latest is written), so at most one write is
+// waiting and its size is bounded by MaxStoreBytes. Sync (World.Flush, at the
+// end of the game) writes at once and waits. A write that failed is reported by
+// the next Flush and tried again.
+//
+// A save file that could not be read, is larger than allowed, or comes from a
+// newer version of the engine is never overwritten: the store is then
+// read-only for the file (one line in the log) and works in memory. A file that
+// is damaged (not JSON) is moved aside as <name>.bak-<n> before the first write.
 type FileStore struct {
 	*MemStore
 	dir, name string
 	// Log receives problems with the file (one line each). May be nil.
 	Log func(string)
+
+	readOnly atomic.Bool // never write: the file on disk is not ours to replace
+	backup   bool        // the file is damaged: move it aside before the first write
+
+	write func(data []byte) error // writes one snapshot; tests replace it
+
+	mu      sync.Mutex
+	pending []byte // the newest snapshot not yet written
+	started bool
+	closed  bool
+	lastErr error
+	wake    chan struct{}
+	wmu     sync.Mutex  // one file write at a time
+	retry   atomic.Bool // the last write failed: write again at the next Flush
 }
 
 // StoreID is the stable name of a project's save file: the sanitized folder
@@ -233,11 +306,17 @@ func DefaultSavesDir() (string, error) {
 	return filepath.Join(base, "vide2d", "saves"), nil
 }
 
+// staleTempAge is how old a leftover temporary file of an interrupted write
+// must be to be deleted when a store opens.
+const staleTempAge = 24 * time.Hour
+
 // NewFileStore opens the memory of the project in the folder root, saved in
-// savesDir (see DefaultSavesDir). A missing file is an empty store; a damaged
-// one is reported to log and treated as empty.
+// savesDir (see DefaultSavesDir). A missing file is an empty store; a file that
+// cannot be used is reported to log, the game starts with an empty memory and
+// the file is kept (see FileStore).
 func NewFileStore(savesDir, root string, log func(string)) *FileStore {
 	f := &FileStore{MemStore: NewMemStore(), dir: savesDir, name: StoreID(root) + ".json", Log: log}
+	f.write = f.writeFile
 	f.load()
 	return f
 }
@@ -256,22 +335,36 @@ type storeFile struct {
 	Values  map[string]any `json:"values"`
 }
 
+const storeVersion = 1
+
 func (f *FileStore) load() {
 	r, err := projfs.OpenDir(f.dir)
 	if err != nil {
 		return // no folder yet: nothing saved
 	}
 	defer r.Close()
+	r.RemoveStaleTemps(".", time.Now().Add(-staleTempAge), 1000, 20)
 	data, err := r.ReadFile(f.name, maxStoreFile)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			f.logf("Сохранения игры не прочитались (%v): игра начинает с пустой памяти.", err)
+			f.readOnly.Store(true)
+			f.logf("Сохранения игры не прочитались (%v): игра начинает с пустой памяти, а файл %s не будет перезаписан.", err, f.Path())
 		}
 		return
 	}
+	var head struct {
+		Version int `json:"version"`
+	}
+	_ = json.Unmarshal(data, &head)
+	if head.Version > storeVersion {
+		f.readOnly.Store(true)
+		f.logf("Файл сохранений %s записан более новой версией движка (%d): игра начинает с пустой памяти, файл не будет перезаписан.", f.Path(), head.Version)
+		return
+	}
 	var sf storeFile
-	if err := json.Unmarshal(data, &sf); err != nil || sf.Version != 1 {
-		f.logf("Файл сохранений %s повреждён: игра начинает с пустой памяти.", f.Path())
+	if err := json.Unmarshal(data, &sf); err != nil || sf.Version != storeVersion {
+		f.backup = true
+		f.logf("Файл сохранений %s повреждён: игра начинает с пустой памяти, а старый файл будет сохранён рядом с суффиксом .bak.", f.Path())
 		return
 	}
 	keys := make([]string, 0, len(sf.Values))
@@ -297,14 +390,15 @@ func (f *FileStore) load() {
 	}
 }
 
-// Flush writes the file if anything changed since the last write.
-func (f *FileStore) Flush() error {
-	if !f.dirty {
+// encode makes the snapshot of the whole memory.
+func (f *FileStore) encode() ([]byte, error) {
+	return encodeJSON(storeFile{Version: storeVersion, Values: f.vals})
+}
+
+// writeFile writes one snapshot: the real thing behind f.write.
+func (f *FileStore) writeFile(data []byte) error {
+	if f.readOnly.Load() {
 		return nil
-	}
-	data, err := json.Marshal(storeFile{Version: 1, Values: f.vals})
-	if err != nil {
-		return err
 	}
 	if err := os.MkdirAll(f.dir, 0o700); err != nil {
 		return err
@@ -314,12 +408,134 @@ func (f *FileStore) Flush() error {
 		return err
 	}
 	defer r.Close()
-	if err := r.WriteFile(f.name, data); err != nil {
+	if f.backup {
+		moved := false
+		for n := 1; n <= 99 && !moved; n++ {
+			err := r.Rename(f.name, fmt.Sprintf("%s.bak-%d", f.name, n))
+			switch {
+			case err == nil:
+				moved = true
+			case errors.Is(err, fs.ErrNotExist):
+				moved = true // nothing left to move
+			case errors.Is(err, fs.ErrExist):
+			default:
+				return fmt.Errorf("не удалось отложить повреждённый файл: %w", err)
+			}
+		}
+		if !moved {
+			f.readOnly.Store(true)
+			return fmt.Errorf("слишком много копий .bak рядом с %s: файл не перезаписан", f.Path())
+		}
+		f.backup = false
+	}
+	return r.WriteFileMode(f.name, data, 0o600)
+}
+
+// Flush hands the changes to the background writer and returns at once. It
+// returns the error of an earlier write that failed (once).
+func (f *FileStore) Flush() error {
+	f.mu.Lock()
+	err := f.lastErr
+	f.lastErr = nil
+	f.mu.Unlock()
+	if f.readOnly.Load() {
+		f.dirty = false // kept in memory only
 		return err
 	}
+	if !f.dirty && !f.retry.Load() {
+		return err
+	}
+	data, eerr := f.encode()
+	if eerr != nil {
+		return eerr
+	}
 	f.dirty = false
+	f.retry.Store(false)
+	f.mu.Lock()
+	f.pending = data
+	if f.closed {
+		f.mu.Unlock()
+		if derr := f.drain(); derr != nil {
+			return derr
+		}
+		return err
+	}
+	if !f.started {
+		f.started = true
+		f.wake = make(chan struct{}, 1)
+		go f.run(f.wake)
+	}
+	select {
+	case f.wake <- struct{}{}:
+	default: // a wake-up is already waiting
+	}
+	f.mu.Unlock()
+	return err
+}
+
+// run is the background writer.
+func (f *FileStore) run(wake chan struct{}) {
+	for range wake {
+		if err := f.drain(); err != nil {
+			f.mu.Lock()
+			f.lastErr = err
+			f.mu.Unlock()
+		}
+	}
+}
+
+// drain writes the pending snapshot, if any, now.
+func (f *FileStore) drain() error {
+	f.wmu.Lock()
+	defer f.wmu.Unlock()
+	f.mu.Lock()
+	data := f.pending
+	f.pending = nil
+	f.mu.Unlock()
+	if data == nil {
+		return nil
+	}
+	if err := f.write(data); err != nil {
+		f.retry.Store(true)
+		return err
+	}
 	return nil
 }
+
+// Sync writes everything that changed and waits until it is on disk. Call it
+// when the game ends.
+func (f *FileStore) Sync() error {
+	f.mu.Lock()
+	f.lastErr = nil
+	f.mu.Unlock()
+	if !f.readOnly.Load() && (f.dirty || f.retry.Load()) {
+		data, err := f.encode()
+		if err != nil {
+			return err
+		}
+		f.dirty = false
+		f.retry.Store(false)
+		f.mu.Lock()
+		f.pending = data
+		f.mu.Unlock()
+	}
+	return f.drain()
+}
+
+// Close syncs and stops the background writer. Later Flushes write at once.
+func (f *FileStore) Close() error {
+	err := f.Sync()
+	f.mu.Lock()
+	if f.started && !f.closed {
+		close(f.wake)
+	}
+	f.closed = true
+	f.mu.Unlock()
+	return err
+}
+
+// Syncer is a Store that writes in the background and can be made to finish.
+type Syncer interface{ Sync() error }
 
 // WithDevices returns the options with the real sound card (DeviceAudio) and
 // the save file of the project in root (FileStore in savesDir; "" means

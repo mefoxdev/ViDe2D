@@ -168,8 +168,14 @@ func (w *World) saveMemory() {
 	}
 }
 
-// Flush writes the memory of the game now (call it when the game ends).
-func (w *World) Flush() error { return w.opts.Store.Flush() }
+// Flush writes the memory of the game now and waits until it is saved (call it
+// when the game ends; during the game the store writes in the background).
+func (w *World) Flush() error {
+	if s, ok := w.opts.Store.(Syncer); ok {
+		return s.Sync()
+	}
+	return w.opts.Store.Flush()
+}
 
 // StopSound silences the game's sounds (call it when the game ends).
 func (w *World) StopSound() { w.opts.mixer.StopAll() }
@@ -182,6 +188,7 @@ func (w *World) SetAudio(a Audio) {
 	}
 	w.opts.Audio = a
 	w.opts.mixer.audio = a
+	w.opts.mixer.music = "" // the new device plays nothing yet: the next "play music" starts it
 }
 
 // logOnceKey logs a message the first time (see scriptRuntime.logOnce).
@@ -197,23 +204,37 @@ func (w *World) logOnceKey(key, msg string) {
 
 // PlaySound implements vm.Host.
 func (h *scriptHost) PlaySound(name string) error {
+	if h.w.life != nil {
+		return nil // nobody hears an object that is out of sight
+	}
 	h.w.scripts.eng.Charge(8)
 	return h.w.opts.mixer.PlaySound(name)
 }
 
 // PlayMusic implements vm.Host.
 func (h *scriptHost) PlayMusic(name string) error {
+	if h.w.life != nil {
+		return nil
+	}
 	h.w.scripts.eng.Charge(8)
 	return h.w.opts.mixer.PlayMusic(name)
 }
 
 // StopMusic implements vm.Host.
-func (h *scriptHost) StopMusic() { h.w.opts.mixer.StopMusic() }
+func (h *scriptHost) StopMusic() {
+	if h.w.life != nil {
+		return
+	}
+	h.w.opts.mixer.StopMusic()
+}
 
 // GoToScene implements vm.Host: the name is checked now, the change happens
 // after the step. If a change was already asked for in this step, the first
 // one wins.
 func (h *scriptHost) GoToScene(name string) error {
+	if h.w.life != nil {
+		return errOfflineScene
+	}
 	h.w.scripts.eng.Charge(32) // looking for a file is not free
 	rel, err := h.w.src.ResolveScene(name)
 	if err != nil {
@@ -227,6 +248,10 @@ func (h *scriptHost) GoToScene(name string) error {
 
 // RestartScene implements vm.Host.
 func (h *scriptHost) RestartScene() {
+	if h.w.life != nil {
+		h.w.scripts.logOnce("life-restart", "Объект вне видимой карты вызвал «restart scene»: офлайн это ничего не делает (TD406).")
+		return
+	}
 	if h.w.sceneReq == nil {
 		h.w.sceneReq = &SceneRequest{Restart: true}
 	}

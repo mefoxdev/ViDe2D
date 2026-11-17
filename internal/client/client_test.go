@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hajimehoshi/ebiten/v2"
+
 	"github.com/vide2d/vide-studio/internal/project"
 	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/scene"
@@ -182,4 +184,32 @@ func TestScanCapsGames(t *testing.T) {
 	if g := Scan(d); len(g) != maxGames {
 		t.Fatal(len(g))
 	}
+}
+
+// closingGame is an ebiten.Game that counts its Close calls.
+type closingGame struct {
+	closed int
+	err    error
+}
+
+func (g *closingGame) Update() error              { return g.err }
+func (g *closingGame) Draw(*ebiten.Image)         {}
+func (g *closingGame) Layout(w, h int) (int, int) { return w, h }
+func (g *closingGame) Close() error               { g.closed++; return g.err }
+
+func TestShellClosesTheGameItLeaves(t *testing.T) {
+	g := &closingGame{}
+	s := &Shell{running: g}
+	s.stop()
+	if g.closed != 1 || s.running != nil {
+		t.Fatalf("closed %d times, running=%v", g.closed, s.running)
+	}
+	g2 := &closingGame{err: errors.New("disk full")}
+	s = &Shell{running: g2}
+	s.Close()
+	if g2.closed != 1 || !strings.Contains(s.status, "disk full") {
+		t.Fatalf("closed %d, status %q", g2.closed, s.status)
+	}
+	s.Close() // nothing running: harmless
+	(&Shell{running: nil}).stop()
 }

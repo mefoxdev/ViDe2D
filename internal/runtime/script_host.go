@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/vide2d/vide-studio/internal/tdsl/vm"
 )
@@ -27,6 +28,11 @@ func (h *scriptHost) charge() {
 }
 
 func (h *scriptHost) Exists(id vm.ObjID) bool {
+	if l := h.w.life; l != nil {
+		if e := l.u.sleepByID[int(id)]; e != nil {
+			return !e.Dead
+		}
+	}
 	e := h.w.byID[int(id)]
 	return e != nil && !e.Dead
 }
@@ -72,6 +78,9 @@ func (h *scriptHost) Distance(a, b vm.ObjID) (float64, error) {
 }
 
 func (h *scriptHost) Touching(self vm.ObjID, t vm.Target, dir vm.Dir, useDir bool) (bool, int, error) {
+	if h.w.life != nil {
+		return false, 0, nil // no collisions offline
+	}
 	e, err := h.ent(self)
 	if err != nil {
 		return false, 0, err
@@ -81,6 +90,9 @@ func (h *scriptHost) Touching(self vm.ObjID, t vm.Target, dir vm.Dir, useDir boo
 }
 
 func (h *scriptHost) Overlapping(self vm.ObjID, t vm.Target, buf []vm.ObjID) ([]vm.ObjID, int, error) {
+	if h.w.life != nil {
+		return buf, 0, nil
+	}
 	e, err := h.ent(self)
 	if err != nil {
 		return buf, 0, err
@@ -94,14 +106,17 @@ func (h *scriptHost) Overlapping(self vm.ObjID, t vm.Target, buf []vm.ObjID) ([]
 }
 
 func (h *scriptHost) MoveAvoiding(self vm.ObjID, dx, dy float64, tag string) (int, error) {
-	e, err := h.ent(self)
+	e, err := h.entW(self)
 	if err != nil {
 		return 0, err
 	}
 	if dx == 0 && dy == 0 {
 		return 0, nil
 	}
-	allowed, work := h.w.allowedMove(e, dx, dy, tag)
+	allowed, work := math.Inf(1), 0 // offline there is nothing to avoid: a plain move
+	if h.w.life == nil {
+		allowed, work = h.w.allowedMove(e, dx, dy, tag)
+	}
 	work += h.w.takeWork()
 	// move the whole distance when nothing is in the way, so that the result is
 	// the same number as with a plain "move"
@@ -116,6 +131,7 @@ func (h *scriptHost) MoveAvoiding(self vm.ObjID, dx, dy float64, tag string) (in
 		return work, err
 	}
 	h.w.Place(e, nx, ny, false)
+	work += h.w.takeWork()
 	return work, nil
 }
 
@@ -134,6 +150,9 @@ func copySign(mag, sign float64) float64 {
 }
 
 func (h *scriptHost) Spawn(name string, x, y float64) (vm.ObjID, int, error) {
+	if h.w.life != nil {
+		return 0, 0, errOfflineNoSpawn
+	}
 	if err := checkCoord(x, y); err != nil {
 		return 0, 0, err
 	}
@@ -176,10 +195,18 @@ func (w *World) MousePos() (x, y float64, held bool) {
 	return float64(x + float64(w.CamX)), float64(y + float64(w.CamY)), held
 }
 
-func (h *scriptHost) Mouse() (float64, float64, bool) { return h.w.MousePos() }
+func (h *scriptHost) Mouse() (float64, float64, bool) {
+	if h.w.life != nil {
+		return 0, 0, false
+	}
+	return h.w.MousePos()
+}
 
 // Clicked reports whether the button went down in this step over the object.
 func (h *scriptHost) Clicked(self vm.ObjID) bool {
+	if h.w.life != nil {
+		return false
+	}
 	m, ok := h.w.Input.(MouseInput)
 	if !ok || !m.MousePressed() {
 		return false
@@ -203,7 +230,7 @@ func (h *scriptHost) Clicked(self vm.ObjID) bool {
 // step yet gets its script instance (and variables) now, so that other
 // scripts can use its variables.
 func (h *scriptHost) EnsureInstance(id vm.ObjID) {
-	e := h.w.byID[int(id)]
+	e, _ := h.ent(id)
 	if e == nil || e.Dead {
 		return
 	}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // MaxDocBytes is the largest .vide.json document the runtime, the studio and
@@ -227,6 +228,12 @@ func (r *Root) CreateNew(rel string, data []byte) error {
 // WriteFile writes data to rel atomically (temp file in the same folder, then
 // rename). Missing folders are created.
 func (r *Root) WriteFile(rel string, data []byte) error {
+	return r.WriteFileMode(rel, data, 0o644)
+}
+
+// WriteFileMode is WriteFile with the permissions of the new file (for files
+// of the user's own, such as saves: 0o600).
+func (r *Root) WriteFileMode(rel string, data []byte, perm os.FileMode) error {
 	if err := r.prepareWrite(rel); err != nil {
 		return err
 	}
@@ -239,9 +246,9 @@ func (r *Root) WriteFile(rel string, data []byte) error {
 	for try := 0; ; try++ {
 		var b [6]byte
 		rand.Read(b[:])
-		tmp = dir + ".vide-save-" + hex.EncodeToString(b[:])
+		tmp = dir + TempPrefix + hex.EncodeToString(b[:])
 		var err error
-		f, err = r.r.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err = r.r.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 		if err == nil {
 			break
 		}
@@ -300,4 +307,68 @@ func WriteFile(root, rel string, data []byte) error {
 func CreateNew(root, rel string, data []byte) error {
 	_, err := with(root, func(r *Root) (struct{}, error) { return struct{}{}, r.CreateNew(rel, data) })
 	return err
+}
+
+// Rename renames the regular file old to new (both checked, no links). It
+// refuses to replace an existing new.
+func (r *Root) Rename(old, new string) error {
+	st, err := r.check(old, false)
+	if err != nil {
+		return err
+	}
+	if !isRegular(st.Mode()) {
+		return fmt.Errorf("%s: not a regular file", old)
+	}
+	if st, err := r.check(new, true); err != nil {
+		return err
+	} else if st != nil {
+		return fmt.Errorf("%s: %w", new, fs.ErrExist)
+	}
+	return unwrap(r.r.Rename(old, new))
+}
+
+// Remove deletes the regular file rel.
+func (r *Root) Remove(rel string) error {
+	st, err := r.check(rel, false)
+	if err != nil {
+		return err
+	}
+	if !isRegular(st.Mode()) {
+		return fmt.Errorf("%s: not a regular file", rel)
+	}
+	return unwrap(r.r.Remove(rel))
+}
+
+// TempPrefix is the start of the names of the temporary files WriteFile makes.
+const TempPrefix = ".vide-save-"
+
+// RemoveStaleTemps deletes leftovers of interrupted writes in the folder rel
+// ("." is the root): regular files named TempPrefix* whose modification time
+// is before cutoff. It looks at no more than scan entries and removes no more
+// than max files; it returns how many it removed.
+func (r *Root) RemoveStaleTemps(rel string, cutoff time.Time, scan, max int) int {
+	des, err := r.ReadDirLimited(rel, scan)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, d := range des {
+		if n >= max {
+			break
+		}
+		if !strings.HasPrefix(d.Name(), TempPrefix) || !isRegular(d.Type()) {
+			continue
+		}
+		if info, err := d.Info(); err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		name := d.Name()
+		if rel != "." {
+			name = rel + "/" + name
+		}
+		if r.r.Remove(name) == nil {
+			n++
+		}
+	}
+	return n
 }

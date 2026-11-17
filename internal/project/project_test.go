@@ -133,8 +133,8 @@ func TestUpgradeFromVersion1(t *testing.T) {
 		t.Fatalf("not upgraded: %+v root=%q", h, s.Root.Script)
 	}
 	out, _ := Marshal(s)
-	if !strings.Contains(string(out), `"version": 4`) {
-		t.Fatalf("not written as v4: %s", out)
+	if !strings.Contains(string(out), `"version": 5`) {
+		t.Fatalf("not written as v5: %s", out)
 	}
 }
 
@@ -293,5 +293,79 @@ func TestSceneViewAndTickRate(t *testing.T) {
 	old, err := Unmarshal([]byte(`{"version":3,"scene":{"name":"S","kind":"Node"}}`))
 	if err != nil || old.ViewW != 320 || old.TickRate != 60 {
 		t.Fatalf("v3 file should get defaults: %v", err)
+	}
+}
+
+func aliveMap() *scene.Scene {
+	m := scene.New("World")
+	m.Type = scene.DocMap
+	m.Optimization = true
+	c := m.Add(nil, scene.KindChunk, "Chunk 0,0")
+	c.X, c.Y = m.ChunkOrigin(c)
+	g := m.Add(c, scene.KindNode, "Herd")
+	g.Alive = true
+	k := m.Add(g, scene.KindSprite, "Cow")
+	k.Alive, k.Script = true, "scripts/cow.tdsl"
+	t := m.Add(c, scene.KindText, "Sign")
+	t.Alive = true
+	return m
+}
+
+func TestAliveRoundTrip(t *testing.T) {
+	data, err := Marshal(aliveMap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"version": 5`) || !strings.Contains(string(data), `"alive": true`) {
+		t.Fatalf("version 5 with alive expected:\n%s", data)
+	}
+	s, err := Unmarshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := s.Root.Children[0]
+	if !c.Children[0].Alive || !c.Children[0].Children[0].Alive || !c.Children[1].Alive || c.Alive {
+		t.Fatalf("alive flags lost or invented")
+	}
+	again, _ := Marshal(s)
+	if string(again) != string(data) {
+		t.Fatalf("round trip differs")
+	}
+}
+
+func TestAliveValidation(t *testing.T) {
+	bad := map[string]string{
+		"on a chunk":      `{"version":5,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"C","kind":"Chunk","chunk":[0,0],"alive":true}]}}`,
+		"outside a chunk": `{"version":5,"type":"map","optimization":false,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Node","alive":true}]}}`,
+		"in a scene":      `{"version":5,"scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Sprite","w":4,"h":4,"alive":true}]}}`,
+		"in an object":    `{"version":5,"type":"object","scene":{"name":"M","kind":"Node","children":[{"name":"X","kind":"Node","alive":true}]}}`,
+	}
+	for name, js := range bad {
+		if _, err := Unmarshal([]byte(js)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+	// older files never have alive: the field is ignored
+	old := `{"version":4,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"C","kind":"Chunk","chunk":[0,0],"children":[{"name":"X","kind":"Node","alive":true}]}]}}`
+	s, err := Unmarshal([]byte(old))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Root.Children[0].Children[0].Alive {
+		t.Fatal("a version 4 file must load with alive=false")
+	}
+}
+
+func TestAliveNotSavedWhereItCannotWork(t *testing.T) {
+	m := aliveMap()
+	m.Optimization = false
+	x := m.Add(nil, scene.KindNode, "Loose") // moved out of its chunk in the editor
+	x.Alive = true
+	data, err := Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Unmarshal(data); err != nil {
+		t.Fatalf("saved file must load: %v", err)
 	}
 }

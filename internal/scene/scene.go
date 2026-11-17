@@ -64,6 +64,9 @@ type Node struct {
 	Tag      string // group label used by scripts (touch "coin")
 	Script   string // TrueDSL script: slash-separated path relative to the scripts folder
 	Template bool   // a prototype for `spawn`; not part of the running scene
+	// Alive opts the object into the offline simulation of unloaded map
+	// chunks (see CanBeAlive and docs/truedsl/reference.md, section 8a).
+	Alive    bool
 	Text     string // Text nodes: the label shown
 	Ref      string // Instance nodes: project-relative path of the object document
 	CX, CY   int    // Chunk nodes: chunk coordinates in the map
@@ -270,4 +273,22 @@ func ChunkOverflow(c *Node, size int) string {
 	}
 	walk(c, 0, 0)
 	return msg
+}
+
+// CanBeAlive reports whether n may carry the Alive flag: it must be a Node,
+// Sprite, Text or Instance that sits inside a map chunk (a descendant of a
+// Chunk node). Objects outside chunks are never unloaded, so for them the
+// flag would mean nothing.
+func CanBeAlive(n *Node) bool {
+	switch n.Kind {
+	case KindNode, KindSprite, KindText, KindInstance:
+	default:
+		return false
+	}
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Kind == KindChunk {
+			return true
+		}
+	}
+	return false
 }

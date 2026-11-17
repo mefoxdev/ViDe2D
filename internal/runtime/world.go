@@ -64,6 +64,13 @@ type chunkUnit struct {
 	loaded bool
 	state  ChunkState
 	ids    map[string]int // entity id by node path: the same node keeps its id across reloads
+
+	// offline simulation (life.go): the alive objects of the unloaded chunk and
+	// the members of their groups stay in memory as sleepers
+	sleep     []*Entity       // sleepers in tree order
+	life      []*Entity       // the alive ones among them, in tree order
+	sleepByID map[int]*Entity // by entity id
+	lifeNext  uint64          // no life tick is due before this step
 }
 
 // World is everything that exists while the game runs.
@@ -99,6 +106,15 @@ type World struct {
 	templates   map[string]*scene.Node
 	nodes       []*scene.Node // see allNodes
 	coll        collider
+	asleepByID  map[int]*Entity // alive sleepers of all chunks, by id
+	mailTotal   int             // messages waiting for sleepers
+	lifeObjs    int             // alive objects asleep in unloaded chunks
+	lifeEnts    int             // entities asleep (alive objects and their groups)
+	lifeCI      int             // cursor: index in order of the chunk the next life tick looks at first ...
+	lifeSeq     int             // ... and the position inside it
+	life        *lifeCtx        // set while a life tick runs
+	lifeDQ      []*Entity
+	placeCarry  int // descendants moved by Place not yet charged (see placeCostDiv)
 	bbWork      int // see takeWork
 	rebuildWork int
 	spawnDepth  int // nesting of "spawn" inside the start-up code of spawned objects
@@ -140,7 +156,7 @@ func NewWorld(src *Source, sc *scene.Scene, opts Options) (*World, error) {
 	w := &World{
 		Name: sc.Root.Name, TileSize: sc.TileSize, ViewW: sc.ViewW, ViewH: sc.ViewH,
 		TickRate: sc.TickRate, ImageMode: sc.ImageMode,
-		src: src, opts: opts, scene: sc, chunks: map[ChunkKey]*chunkUnit{}, byID: map[int]*Entity{},
+		src: src, opts: opts, scene: sc, chunks: map[ChunkKey]*chunkUnit{}, byID: map[int]*Entity{}, asleepByID: map[int]*Entity{},
 	}
 	if opts.Scripts {
 		w.Input = opts.Input
@@ -267,6 +283,9 @@ func (w *World) expand(n *scene.Node, ox, oy int, parent *Entity, depth int, sta
 		e.W, e.H, e.Color, e.Text, e.FontSize = float64(n.W), float64(n.H), n.Color, n.Text, n.FontSize
 	}
 	e.fresh = true
+	if sc.unit != nil && scene.CanBeAlive(n) {
+		e.alive = n.Alive
+	}
 	if sc.unit != nil {
 		e.key, e.chunk = sc.path, sc.unit
 		if id := sc.unit.ids[sc.path]; id != 0 {
@@ -364,6 +383,7 @@ func (w *World) LoadChunk(cx, cy int) error {
 		ents = append(ents, es...)
 	}
 	u.ents, u.loaded = ents, true
+	w.wake(u) // the sleepers' state goes into the chunk state before it is applied
 	u.state.restore(ents)
 	w.collChanged()
 	return nil
@@ -378,7 +398,12 @@ func (w *World) UnloadChunk(cx, cy int) bool {
 	}
 	u.state.save(u.ents)
 	w.live -= len(u.ents)
+	w.beginSleep(u)
 	for _, e := range u.ents {
+		if e.asleep {
+			w.forgetSleeper(e)
+			continue
+		}
 		w.forget(e)
 	}
 	u.ents, u.loaded = nil, false
@@ -459,15 +484,16 @@ func (w *World) Len() int { return w.live }
 func (w *World) Step() error {
 	w.Tick++
 	w.Each(func(e *Entity) { e.PrevX, e.PrevY = e.X, e.Y })
+	if w.scripts != nil {
+		w.scripts.beginFrame()
+		w.lifeStep() // unloaded chunks: the life ticks that are due
+	}
 	var steps []*Entity
 	w.Each(func(e *Entity) {
 		if e.Behavior != nil {
 			steps = append(steps, e)
 		}
 	})
-	if w.scripts != nil {
-		w.scripts.beginFrame()
-	}
 	for _, e := range steps {
 		e.Behavior.Step(w, e)
 	}
@@ -512,6 +538,10 @@ func (w *World) Destroy(e *Entity) {
 	}
 }
 
+// placeCostDiv is how many descendants a move of a group may carry for one
+// step of the frame budget.
+const placeCostDiv = 16
+
 // Place puts e at world position (x, y) and moves all its descendants by the
 // same shift, so a group carries its members along. Unless teleport is set
 // (or e was created in this very step) the previous position is kept, so the
@@ -525,6 +555,7 @@ func (w *World) Place(e *Entity, x, y float64, teleport bool) {
 		e.PrevX, e.PrevY = x, y
 	}
 	stack := append([]*Entity(nil), e.Children...)
+	moved := 0
 	for len(stack) > 0 {
 		c := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -532,8 +563,14 @@ func (w *World) Place(e *Entity, x, y float64, teleport bool) {
 		if tp {
 			c.PrevX, c.PrevY = c.X, c.Y
 		}
+		moved++
 		stack = append(stack, c.Children...)
 	}
+	// Moving a group costs steps: one per placeCostDiv descendants moved (the
+	// remainder carries over), taken off the frame budget by the script host.
+	w.placeCarry += moved
+	w.rebuildWork += w.placeCarry / placeCostDiv
+	w.placeCarry %= placeCostDiv
 	w.geoChanged(e, true)
 }
 

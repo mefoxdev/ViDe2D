@@ -100,3 +100,33 @@ func TestSinCosPinnedBits(t *testing.T) {
 		}
 	}
 }
+
+// TestSinCosGoldenBits pins the exact bit patterns of SinDeg and CosDeg. The
+// functions use only + - * / on float64 with explicit conversions, so every
+// architecture (amd64, arm64 with fused multiply-add) must give these very
+// bits: a difference here means games would diverge between machines.
+func TestSinCosGoldenBits(t *testing.T) {
+	golden := []struct {
+		deg      float64
+		sin, cos uint64
+	}{
+		{0, 0x0000000000000000, 0x3ff0000000000000},
+		{1, 0x3f91df0b2b89dd1e, 0x3feffec097f5af8a},
+		{30, 0x3fe0000000000000, 0x3febb67ae8584cab},
+		{45, 0x3fe6a09e667f3bcc, 0x3fe6a09e667f3bcd},
+		{60, 0x3febb67ae8584cab, 0x3fe0000000000000},
+		{89.5, 0x3fefffb02599c9cd, 0x3f81df37c4954c21},
+		{123.456, 0x3feab2a9b25a9ab9, 0xbfe1a43870d371f9},
+		{359.999, 0xbef24d1521135b06, 0x3fefffffffeb111d},
+		{-17.25, 0xbfd2fa89839b2985, 0x3fee8f85fc8f1553},
+		{720.5, 0x3f81df37c4954c21, 0x3fefffb02599c9cd},
+	}
+	for _, g := range golden {
+		if got := math.Float64bits(SinDeg(g.deg)); got != g.sin {
+			t.Errorf("SinDeg(%v) = %#016x, want %#016x", g.deg, got, g.sin)
+		}
+		if got := math.Float64bits(CosDeg(g.deg)); got != g.cos {
+			t.Errorf("CosDeg(%v) = %#016x, want %#016x", g.deg, got, g.cos)
+		}
+	}
+}

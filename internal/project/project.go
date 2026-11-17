@@ -29,7 +29,11 @@ import (
 // scene's map, instances of objects and map chunks. Older files are scenes.
 //
 // Version 4 adds the scene's view (size of the visible world) and tick_rate.
-const Version = 4
+//
+// Version 5 adds the node flag "alive" (simulate while the map chunk is
+// unloaded). Only Node, Sprite, Text and Instance nodes inside map chunks may
+// have it; files older than version 5 load with alive=false.
+const Version = 5
 
 const (
 	maxDepth = 64
@@ -73,6 +77,7 @@ type node struct {
 	Tag      string  `json:"tag,omitempty"`
 	Script   string  `json:"script,omitempty"`
 	Template bool    `json:"template,omitempty"`
+	Alive    bool    `json:"alive,omitempty"`
 	Text     string  `json:"text,omitempty"`
 	FontSize int     `json:"font_size,omitempty"`
 	Ref      string  `json:"ref,omitempty"`
@@ -100,6 +105,7 @@ func mapOpt(s *scene.Scene) *bool {
 func toNode(n *scene.Node) *node {
 	o := &node{Name: n.Name, Kind: string(n.Kind), X: n.X, Y: n.Y}
 	o.Tag, o.Script, o.Template = n.Tag, n.Script, n.Template
+	o.Alive = n.Alive && scene.CanBeAlive(n) // a flag that cannot work is not saved
 	switch n.Kind {
 	case scene.KindText:
 		o.Text, o.FontSize = n.Text, n.FontSize
@@ -198,7 +204,7 @@ func Unmarshal(data []byte) (*scene.Scene, error) {
 	if err := applyMeta(s.Root, root); err != nil {
 		return nil, err
 	}
-	if err := build(s, s.Root, root.Children, 1, &count); err != nil {
+	if err := build(s, s.Root, root.Children, 1, &count, f.Version); err != nil {
 		return nil, err
 	}
 	if err := validateStructure(s); err != nil {
@@ -207,7 +213,7 @@ func Unmarshal(data []byte) (*scene.Scene, error) {
 	return s, nil
 }
 
-func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *int) error {
+func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *int, version int) error {
 	if depth > maxDepth {
 		return errors.New("invalid project file: scene is nested too deeply")
 	}
@@ -283,7 +289,13 @@ func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *i
 				n.Color = c
 			}
 		}
-		if err := build(s, n, k.Children, depth+1, count); err != nil {
+		if k.Alive && version >= 5 {
+			if !scene.CanBeAlive(n) {
+				return fmt.Errorf("invalid project file: %q cannot be alive: only nodes, sprites, texts and instances inside map chunks can", k.Name)
+			}
+			n.Alive = true
+		}
+		if err := build(s, n, k.Children, depth+1, count, version); err != nil {
 			return err
 		}
 	}

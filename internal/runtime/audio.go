@@ -6,6 +6,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2/audio/mp3"
 	"github.com/hajimehoshi/ebiten/v2/audio/vorbis"
@@ -21,6 +22,11 @@ const (
 	soundCacheBytes   = 64 << 20 // all cached sound files together
 	soundCacheEntries = 64
 	maxFailedSounds   = 256 // remembered failures (a broken name is looked up once)
+	// failedSoundTTL is how long a failure is remembered: after that the file is
+	// looked up again, so a sound that was added or repaired while the game runs
+	// starts to work. (Wall-clock time is fine here: it is presentation, the
+	// simulation never sees it.)
+	failedSoundTTL = 10 * time.Second
 )
 
 // ClipFormat is the encoding of a sound file.
@@ -49,7 +55,9 @@ type Clip struct {
 type Audio interface {
 	// PlaySound starts a sound effect. It plays once.
 	PlaySound(c *Clip) error
-	// PlayMusic starts the clip as music, in a loop, instead of any music that plays.
+	// PlayMusic starts the clip as music, in a loop, instead of any music that
+	// plays. It returns an error when the music did not start (no sound card,
+	// a clip that does not decode): the caller then does not count it as playing.
 	PlayMusic(c *Clip) error
 	// StopMusic stops the music.
 	StopMusic()
@@ -68,6 +76,8 @@ func (NullAudio) StopMusic()            {}
 func (NullAudio) StopAll()              {}
 func (NullAudio) Playing() int          { return 0 }
 
+var errNoMusic = fmt.Errorf("the music did not start")
+
 // FakeAudio records what was played, for tests. A sound counts as playing
 // until Finish says it ended.
 type FakeAudio struct {
@@ -76,6 +86,7 @@ type FakeAudio struct {
 	MusicNow   string   // the music that plays now, "" if none
 	MusicStops int
 	StopAlls   int
+	FailMusic  int // the next this many PlayMusic calls fail (the device did not start the music)
 	active     int
 }
 
@@ -86,6 +97,10 @@ func (f *FakeAudio) PlaySound(c *Clip) error {
 }
 
 func (f *FakeAudio) PlayMusic(c *Clip) error {
+	if f.FailMusic > 0 {
+		f.FailMusic--
+		return errNoMusic
+	}
 	f.Music = append(f.Music, c.Name)
 	f.MusicNow = c.Name
 	return nil
@@ -108,13 +123,19 @@ type Sounds struct {
 	cache  map[string]*Clip
 	order  []string // cache keys, oldest first
 	bytes  int
-	failed map[string]error
+	failed map[string]failedSound
 	fOrder []string
+	now    func() time.Time // the clock of the failures' expiry; tests replace it
+}
+
+type failedSound struct {
+	err error
+	at  time.Time
 }
 
 // NewSounds returns a sound cache over src.
 func NewSounds(src *Source) *Sounds {
-	return &Sounds{src: src, cache: map[string]*Clip{}, failed: map[string]error{}}
+	return &Sounds{src: src, cache: map[string]*Clip{}, failed: map[string]failedSound{}, now: time.Now}
 }
 
 var soundExts = []string{".wav", ".ogg", ".mp3"}
@@ -154,8 +175,11 @@ func (s *Sounds) Get(name string) (*Clip, error) {
 	if c, ok := s.cache[name]; ok {
 		return c, nil
 	}
-	if err, bad := s.failed[name]; bad {
-		return nil, err
+	if f, bad := s.failed[name]; bad {
+		if s.now().Sub(f.at) < failedSoundTTL {
+			return nil, f.err
+		}
+		s.forgetFailure(name) // time to look again
 	}
 	c, err := s.load(name)
 	if err != nil {
@@ -163,12 +187,22 @@ func (s *Sounds) Get(name string) (*Clip, error) {
 			delete(s.failed, s.fOrder[0])
 			s.fOrder = s.fOrder[1:]
 		}
-		s.failed[name] = err
+		s.failed[name] = failedSound{err, s.now()}
 		s.fOrder = append(s.fOrder, name)
 		return nil, err
 	}
 	s.put(name, c)
 	return c, nil
+}
+
+func (s *Sounds) forgetFailure(name string) {
+	delete(s.failed, name)
+	for i, n := range s.fOrder {
+		if n == name {
+			s.fOrder = append(s.fOrder[:i], s.fOrder[i+1:]...)
+			break
+		}
+	}
 }
 
 func (s *Sounds) put(name string, c *Clip) {
@@ -304,8 +338,11 @@ func (m *Mixer) PlayMusic(name string) error {
 	if m.music == c.Name {
 		return nil
 	}
-	m.music = c.Name
-	_ = m.audio.PlayMusic(c)
+	// the music counts as playing only if the device started it: otherwise the
+	// next "play music" tries again
+	if err := m.audio.PlayMusic(c); err == nil {
+		m.music = c.Name
+	}
 	return nil
 }
 

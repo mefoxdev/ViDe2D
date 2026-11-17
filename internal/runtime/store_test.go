@@ -27,7 +27,7 @@ func TestStoreRoundTripThroughAFile(t *testing.T) {
 			t.Fatal(k, err)
 		}
 	}
-	if err := s.Flush(); err != nil {
+	if err := s.Sync(); err != nil {
 		t.Fatal(err)
 	}
 	s2 := NewFileStore(dir, root, log)
@@ -46,7 +46,7 @@ func TestStoreRoundTripThroughAFile(t *testing.T) {
 	// the file is deterministic (sorted keys) and written atomically: no temp files remain
 	b1, _ := os.ReadFile(s.Path())
 	s2.dirty = true
-	s2.Flush()
+	s2.Sync()
 	b2, _ := os.ReadFile(s.Path())
 	if string(b1) != string(b2) || !strings.Contains(string(b1), `"version":1`) {
 		t.Fatalf("%s\n%s", b1, b2)
@@ -245,11 +245,13 @@ func TestMemoryIsSavedOncePerSecondAndOnTheWay(t *testing.T) {
 		t.Fatal("saved before a second passed")
 	}
 	simSteps(t, sim, 1)
+	st.Sync() // the write goes on in the background: wait for it
 	if NewFileStore(dir, root, nil).Len() != 1 {
 		t.Fatal("not saved after a second")
 	}
 	in.Press("a")
-	simSteps(t, sim, 1) // go to scene: saved at once
+	simSteps(t, sim, 1) // go to scene: handed to the writer at once
+	st.Sync()
 	if NewFileStore(dir, root, nil).Len() != 2 {
 		t.Fatal("not saved on the scene change")
 	}

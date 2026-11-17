@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"image/color"
+	"io"
 	"log"
 	"math"
 	"time"
@@ -17,16 +18,17 @@ import (
 // Game is the Ebitengine front end: it feeds real elapsed time to the
 // simulation in Update and draws the world in Draw. It holds no game rules.
 type Game struct {
-	Sim    *Sim
-	images *Images
-	view   *ebiten.Image // offscreen, ViewW x ViewH
-	tex    map[string]*ebiten.Image
-	face   *text.GoTextFaceSource
-	faces  map[int]*text.GoTextFace
-	last   time.Time
-	scale  float64 // device scale factor, for Layout
-	scrW   int     // size of the window in layout pixels, as of the last Layout
-	scrH   int
+	Sim     *Sim
+	images  *Images
+	view    *ebiten.Image // offscreen, ViewW x ViewH
+	tex     map[string]*ebiten.Image
+	face    *text.GoTextFaceSource
+	faces   map[int]*text.GoTextFace
+	last    time.Time
+	scale   float64 // device scale factor, for Layout
+	scrW    int     // size of the window in layout pixels, as of the last Layout
+	scrH    int
+	drawBuf []*Entity // reused by drawWorld
 }
 
 // NewGame prepares a game for a loaded world.
@@ -50,11 +52,26 @@ func (g *Game) Run() error {
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	ebiten.SetTPS(ebiten.SyncWithFPS) // Update once per frame; the Clock makes the steps fixed
 	err := ebiten.RunGame(g)
-	// the game is over: save its memory and silence the sounds
-	if ferr := g.Sim.World.Flush(); ferr != nil {
-		log.Printf("memory of the game was not saved: %v", ferr)
+	if cerr := g.Close(); cerr != nil {
+		log.Printf("memory of the game was not saved: %v", cerr)
 	}
-	g.Sim.World.StopSound()
+	return err
+}
+
+// Close ends the game: it saves the memory of the game (and waits until it is
+// on disk), silences the sounds and stops the store's background writer. Call
+// it when the game is left, whoever runs it: Run does it itself, a shell that
+// runs the game inside its own window (Game used as an ebiten.Game without
+// Run) must call it. It is safe to call more than once.
+func (g *Game) Close() error {
+	w := g.Sim.World
+	err := w.Flush()
+	w.StopSound()
+	if c, ok := w.opts.Store.(io.Closer); ok {
+		if cerr := c.Close(); err == nil {
+			err = cerr
+		}
+	}
 	return err
 }
 
@@ -126,10 +143,8 @@ func (g *Game) drawWorld(dst *ebiten.Image, alpha float64) {
 	if pixel {
 		filter = ebiten.FilterNearest
 	}
-	w.Each(func(e *Entity) {
-		if !e.Visible {
-			return
-		}
+	g.drawBuf = w.DrawList(g.drawBuf)
+	for _, e := range g.drawBuf {
 		x, y := e.Lerp(alpha)
 		x, y = x-float64(w.CamX), y-float64(w.CamY)
 		if pixel {
@@ -141,7 +156,7 @@ func (g *Game) drawWorld(dst *ebiten.Image, alpha float64) {
 		case scene.KindText:
 			g.drawText(dst, e, x, y)
 		}
-	})
+	}
 }
 
 func (g *Game) drawSprite(dst *ebiten.Image, e *Entity, x, y float64, filter ebiten.Filter) {
@@ -152,17 +167,15 @@ func (g *Game) drawSprite(dst *ebiten.Image, e *Entity, x, y float64, filter ebi
 	if e.Texture != "" {
 		if img := g.texture(e.Texture); img != nil {
 			b := img.Bounds()
-			op := &ebiten.DrawImageOptions{Filter: filter}
-			op.GeoM.Scale(float64(e.W)/float64(b.Dx()), float64(e.H)/float64(b.Dy()))
-			op.GeoM.Translate(x, y)
+			op := &ebiten.DrawImageOptions{Filter: filter} // pixel mode: nearest sampling, rotated too
+			op.GeoM = drawGeoFlip(float64(b.Dx()), float64(b.Dy()), e.W, e.H, x, y, e.Angle, e.Flip)
 			dst.DrawImage(img, op)
 			return
 		}
 		col = color.RGBA{0xff, 0x00, 0xff, 0xff} // missing texture
 	}
 	op := &ebiten.DrawImageOptions{}
-	op.GeoM.Scale(e.W, e.H) // a plain rectangle looks the same mirrored
-	op.GeoM.Translate(x, y)
+	op.GeoM = drawGeo(1, 1, e.W, e.H, x, y, e.Angle) // a plain rectangle looks the same mirrored
 	op.ColorScale.ScaleWithColor(col)
 	dst.DrawImage(pixelImage(), op)
 }
@@ -185,7 +198,12 @@ func (g *Game) drawText(dst *ebiten.Image, e *Entity, x, y float64) {
 		g.faces[size] = f
 	}
 	op := &text.DrawOptions{}
-	op.GeoM.Translate(x, y)
+	// the text is turned around the center of its box (width and height of the object)
+	if e.W > 0 && e.H > 0 {
+		op.GeoM = drawGeo(e.W, e.H, e.W, e.H, x, y, e.Angle)
+	} else {
+		op.GeoM.Translate(x, y)
+	}
 	op.ColorScale.ScaleWithColor(e.Color)
 	text.Draw(dst, e.Text, f, op)
 }

@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/ebitengine/oto/v3"
 )
@@ -28,6 +29,41 @@ type DeviceAudio struct {
 	music   *oto.Player
 }
 
+// oto allows one context per process, so the context is shared by every
+// DeviceAudio of the process (a launcher may start several games one after
+// another in one process). It is opened by the first sound and never closed.
+var device struct {
+	mu  sync.Mutex
+	ctx *oto.Context
+}
+
+// openContext opens the sound card; tests replace it.
+var openContext = func() (*oto.Context, error) {
+	ctx, _, err := oto.NewContext(&oto.NewContextOptions{SampleRate: deviceRate, ChannelCount: 2, Format: oto.FormatSignedInt16LE})
+	return ctx, err
+}
+
+// sharedContext returns the process's context, opening it if need be. A failure
+// is not remembered here: each DeviceAudio remembers its own.
+func sharedContext() (c *oto.Context, err error) {
+	device.mu.Lock()
+	defer device.mu.Unlock()
+	if device.ctx != nil {
+		return device.ctx, nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			c, err = nil, fmt.Errorf("%v", r)
+		}
+	}()
+	c, err = openContext()
+	if err != nil {
+		return nil, err
+	}
+	device.ctx = c
+	return c, nil
+}
+
 // NewDeviceAudio returns an Audio for the real sound card; nothing is opened yet.
 func NewDeviceAudio(log func(string)) *DeviceAudio { return &DeviceAudio{Log: log} }
 
@@ -46,13 +82,7 @@ func (a *DeviceAudio) context() (c *oto.Context) {
 	if a.ctx != nil {
 		return a.ctx
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			a.fail(fmt.Errorf("%v", r))
-			c = nil
-		}
-	}()
-	ctx, _, err := oto.NewContext(&oto.NewContextOptions{SampleRate: deviceRate, ChannelCount: 2, Format: oto.FormatSignedInt16LE})
+	ctx, err := sharedContext()
 	if err != nil {
 		a.fail(err)
 		return nil
@@ -113,7 +143,11 @@ func (a *DeviceAudio) PlaySound(c *Clip) error {
 // PlayMusic implements Audio.
 func (a *DeviceAudio) PlayMusic(c *Clip) error {
 	a.StopMusic()
-	a.music = a.start(c, true)
+	p := a.start(c, true)
+	if p == nil {
+		return errNoMusic
+	}
+	a.music = p
 	return nil
 }
 

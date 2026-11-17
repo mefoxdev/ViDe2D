@@ -120,6 +120,15 @@ type Host interface {
 	Services
 }
 
+// Mailbox is an optional part of a Host: it takes a message sent "to" an
+// object that has an instance but is not in the world right now (an alive
+// object of an unloaded chunk sleeps), so that it can be handed over later.
+// Only plain values (number, text, yes/no) arrive: Post gets a list or object
+// as nothing, which the host sees as the zero Value.
+type Mailbox interface {
+	Post(to ObjID, text string, value Value)
+}
+
 // Services is the part of the Host that is not about objects: sound, scenes
 // and the memory of the game. Every method is called while a script runs and
 // must be cheap or report its work.
@@ -199,6 +208,8 @@ type Limits struct {
 	Objects        int // live objects made by "spawn"
 	Waiting        int // suspended handler runs ("wait", "slide") in the whole game
 	WaitingPerObj  int // suspended handler runs of one object
+	SnapshotTasks  int // suspended runs kept in the saved state of unloaded objects, whole game
+	SnapshotItems  int // values (list items included) kept for the suspended runs of one saved object
 }
 
 // MaxCoord bounds the numbers a script may write into object properties and
@@ -208,5 +219,6 @@ const MaxCoord = 1e9
 // DefaultLimits returns the limits from safety.md.
 func DefaultLimits() Limits {
 	return Limits{FrameSteps: 200_000, HandlerSteps: 50_000, CallDepth: 64, ListItems: 100_000, TextChars: 10_000, PrintsPerFrame: 1000, PrintChars: 1000,
-		SendsPerFrame: 1000, Backlog: 5000, Objects: 5000, Waiting: 10_000, WaitingPerObj: 16}
+		SendsPerFrame: 1000, Backlog: 5000, Objects: 5000, Waiting: 10_000, WaitingPerObj: 16,
+		SnapshotTasks: 10_000, SnapshotItems: 50_000}
 }

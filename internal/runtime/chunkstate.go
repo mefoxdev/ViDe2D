@@ -8,11 +8,9 @@ import "image/color"
 // back, so a coin that was picked up stays picked up and a script variable
 // keeps its value when the player walks away and returns.
 //
-// This is the extension point for a future offline simulation of unloaded
-// chunks (an "A-Life" system that lets the world go on without the player
-// watching): such a system would read and advance Entities here between
-// unload and load. Nothing like that is implemented; today the state is only
-// frozen and thawed.
+// The state is frozen at unload and thawed at load, except for the alive
+// objects of the chunk: they are simulated while it is unloaded (life.go) and
+// their state is written here again just before the load applies it.
 type ChunkState struct {
 	// Entities holds the saved state of the entities of the chunk while it is
 	// unloaded; it is emptied when the chunk loads.

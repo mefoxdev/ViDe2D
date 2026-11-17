@@ -590,6 +590,18 @@ func (s *Studio) inspector(r image.Rectangle) {
 			n.Template = !n.Template
 		}
 	}
+	if scene.CanBeAlive(n) {
+		ar := line()
+		tw := ar.Dx() - 60
+		u.Text(image.Rect(ar.Min.X, ar.Min.Y, ar.Min.X+tw, ar.Max.Y), u.FitText("Alive (simulate while unloaded)", float64(tw)), u.Theme.TextDim)
+		label := "no"
+		if n.Alive {
+			label = "yes"
+		}
+		if u.Toggle(image.Rect(ar.Max.X-56, ar.Min.Y, ar.Max.X, ar.Max.Y), label, n.Alive) {
+			n.Alive = !n.Alive
+		}
+	}
 	y += 6
 	u.Text(line(), "Shift: step 8 • Enter: apply", u.Theme.TextDim)
 }

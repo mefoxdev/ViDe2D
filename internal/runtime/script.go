@@ -379,7 +379,21 @@ func (b *scriptBehavior) SnapshotState() any {
 		}
 		return nil
 	}
-	return b.inst.Snapshot()
+	st := b.inst.Snapshot()
+	if st.Dropped > 0 {
+		b.rt.logOnce("snapshot-drop", fmt.Sprintf(
+			"В выгруженном чанке не поместилось %d ждущих обработчиков (лимит памяти): после возврата они начнутся заново, когда сработают.", st.Dropped))
+	}
+	return st
+}
+
+// releasePending gives back the share of the saved-runs limit that a state
+// waiting to be applied holds (the object it was meant for is gone).
+func (b *scriptBehavior) releasePending() {
+	if b.pending != nil {
+		b.pending.Release()
+		b.pending = nil
+	}
 }
 
 // RestoreState implements Stateful.
@@ -443,8 +457,8 @@ func (h *scriptHost) Log(text string) { h.w.logMsg(text) }
 
 func (h *scriptHost) Key(name string, st tdsl.KeyState) bool {
 	in := h.w.Input
-	if in == nil {
-		return false
+	if in == nil || h.w.life != nil {
+		return false // offline objects see no keys
 	}
 	switch st {
 	case tdsl.KeyHeld:
@@ -455,16 +469,36 @@ func (h *scriptHost) Key(name string, st tdsl.KeyState) bool {
 	return in.Released(name)
 }
 
+// ent finds the object to read. During an offline life tick the objects of the
+// sleeping chunk are found as well as the loaded ones.
 func (h *scriptHost) ent(id vm.ObjID) (*Entity, error) {
+	if l := h.w.life; l != nil {
+		if e := l.u.sleepByID[int(id)]; e != nil && !e.Dead {
+			return e, nil
+		}
+	}
 	if e := h.w.byID[int(id)]; e != nil {
 		return e, nil
 	}
 	return nil, vm.ErrGone
 }
 
+// entW finds the object to change. During an offline life tick only the
+// sleeping objects of the same chunk may be changed (the object and its
+// group), never the loaded world.
+func (h *scriptHost) entW(id vm.ObjID) (*Entity, error) {
+	if l := h.w.life; l != nil {
+		if e := l.u.sleepByID[int(id)]; e != nil && !e.Dead {
+			return e, nil
+		}
+		return nil, errOfflineWrite
+	}
+	return h.ent(id)
+}
+
 // MoveBy shifts the object (and its group members) by (dx, dy) pixels.
 func (h *scriptHost) MoveBy(id vm.ObjID, dx, dy float64) error {
-	e, err := h.ent(id)
+	e, err := h.entW(id)
 	if err != nil {
 		return err
 	}
@@ -474,13 +508,14 @@ func (h *scriptHost) MoveBy(id vm.ObjID, dx, dy float64) error {
 		return err
 	}
 	h.w.Place(e, nx, ny, false)
+	h.charge()
 	return nil
 }
 
 // MoveTo puts the object at (x, y) relative to its parent group. Like "x = ..."
 // it glides (no teleport) unless the object was just created.
 func (h *scriptHost) MoveTo(id vm.ObjID, x, y float64) error {
-	e, err := h.ent(id)
+	e, err := h.entW(id)
 	if err != nil {
 		return err
 	}
@@ -492,6 +527,7 @@ func (h *scriptHost) MoveTo(id vm.ObjID, x, y float64) error {
 		return err
 	}
 	h.w.Place(e, wx, wy, false)
+	h.charge()
 	return nil
 }
 
@@ -507,9 +543,13 @@ func checkCoord(vals ...float64) error {
 }
 
 func (h *scriptHost) Destroy(id vm.ObjID) error {
-	e, err := h.ent(id)
+	e, err := h.entW(id)
 	if err != nil {
 		return err
+	}
+	if h.w.life != nil {
+		h.w.lifeDestroy(e)
+		return nil
 	}
 	h.w.Destroy(e)
 	return nil
@@ -559,7 +599,7 @@ func (h *scriptHost) GetProp(id vm.ObjID, p vm.Prop) (vm.Value, error) {
 }
 
 func (h *scriptHost) SetProp(id vm.ObjID, p vm.Prop, v vm.Value) error {
-	e, err := h.ent(id)
+	e, err := h.entW(id)
 	if err != nil {
 		return err
 	}
@@ -581,6 +621,7 @@ func (h *scriptHost) SetProp(id vm.ObjID, p vm.Prop, v vm.Value) error {
 			return err
 		}
 		h.w.Place(e, wx, wy, false)
+		h.charge()
 	case vm.PropWidth:
 		e.W = v.N
 		h.w.geoChanged(e, false)

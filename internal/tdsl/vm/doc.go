@@ -97,6 +97,19 @@
 //     goes on the remaining number of steps after the step in which Restore
 //     is called.
 //
+// # Offline life ("alive" objects of unloaded chunks)
+//
+// Instance.RunOffline is the simplified step the runtime gives an object whose
+// chunk is not loaded (reference.md, section 8a). Given the number of steps
+// since the object last lived it runs the start-up, the handlers that were
+// waiting, every "when update" once with "per second" multiplied by the number
+// of steps (so one run covers the whole period), and every "when every" once
+// per elapsed period (at most MaxMissedPeriods), keeping the timer's phase.
+// Keys, clicks, touches and messages do not run. During the call the script
+// may read other objects' variables but writes only those the host allows
+// (canWrite); anything else is TD406 (CodeOffline). The host decides about the
+// rest (no spawn, no scene change, no sound).
+//
 // # Sound, scenes, memory
 //
 // These are the Services part of Host (PlaySound, PlayMusic, StopMusic,

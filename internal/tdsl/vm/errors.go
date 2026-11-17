@@ -29,6 +29,7 @@ const (
 	CodeReadOnly    = "TD107"
 	CodeUnsupported = "TD499"
 	CodeInternal    = "TD405" // a bug of the engine, caught by recover
+	CodeOffline     = "TD406" // a command that cannot run while an object lives offline
 )
 
 // Error is a runtime error of a script: it stops one handler run only.

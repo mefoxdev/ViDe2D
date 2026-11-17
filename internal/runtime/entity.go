@@ -4,6 +4,7 @@ import (
 	"image/color"
 
 	"github.com/vide2d/vide-studio/internal/scene"
+	"github.com/vide2d/vide-studio/internal/tdsl/vm"
 )
 
 // Behavior is the hook for per-entity logic: the script VM implements it
@@ -63,8 +64,8 @@ type Entity struct {
 	W, H     float64
 	Visible  bool
 	Flip     bool    // mirrored horizontally
-	Angle    float64 // degrees; stored, not drawn yet
-	Layer    float64 // draw order hint; stored, not used yet
+	Angle    float64 // degrees, rotation around the center of the object
+	Layer    float64 // draw order: higher is drawn on top (see DrawOrder)
 	Color    color.RGBA
 	Texture  string // project-relative PNG path, "" for a plain color rectangle
 	Text     string
@@ -88,9 +89,15 @@ type Entity struct {
 	qstamp             uint64
 	gIn, gDirty, gBig  bool
 	gx0, gy0, gx1, gy1 int
-	fresh              bool       // created and not yet through its first step
-	key                string     // stable identity of the map node inside its chunk ("" outside chunks)
-	chunk              *chunkUnit // the chunk the entity belongs to, nil for scene and static map content
+	alive              bool         // from the map node: lives on while its chunk is unloaded
+	asleep             bool         // kept in memory by the offline simulation (chunk unloaded)
+	keepInst           bool         // asleep and ticked: its script instance stays in the engine
+	lifeLast           uint64       // step of its last life tick (or of the sleep's start)
+	mail               []vm.Message // messages that came while it slept, for its next life tick
+	lifeSeq            int          // position among the chunk's alive objects, for the cursor
+	fresh              bool         // created and not yet through its first step
+	key                string       // stable identity of the map node inside its chunk ("" outside chunks)
+	chunk              *chunkUnit   // the chunk the entity belongs to, nil for scene and static map content
 }
 
 // HasTag reports whether the entity carries tag.

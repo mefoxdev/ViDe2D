@@ -50,8 +50,12 @@ type Engine struct {
 	sent   int                 // "send" commands in this frame
 	pairs  int                 // (message, object) pairs looked at, for the budget
 
+	off *offlineRun // set while RunOffline runs
+
 	tick    int64 // steps begun so far (BeginFrame); the clock of "wait" and "slide"
 	waiting int   // suspended handler runs in the whole game
+
+	snapTasks int // suspended runs held by saved states (InstanceState) of the whole game
 }
 
 // Message is a "send" waiting for delivery.
@@ -90,6 +94,17 @@ func (e *Engine) BeginFrame() {
 // Charge takes n steps off the budget of the frame (for work the VM did not
 // count itself).
 func (e *Engine) Charge(n int) { e.frameLeft -= n }
+
+// Enqueue puts a message in the queue as if it had been sent in this frame. It
+// reports false if the backlog is full. The runtime uses it to hand over the
+// messages an object got while it slept.
+func (e *Engine) Enqueue(m Message) bool {
+	if len(e.queue) >= e.Limits.Backlog {
+		return false
+	}
+	e.queue = append(e.queue, m)
+	return true
+}
 
 // Pending is the number of messages waiting for delivery.
 func (e *Engine) Pending() int { return len(e.queue) }
@@ -182,6 +197,14 @@ func (e *Engine) Deliver(order []*Instance) (errs []*Error) {
 		if m.HasTo {
 			if in := e.instanceOf(m.To); in != nil && e.Host.Exists(m.To) && in.hasMessages() {
 				errs = append(errs, in.deliver(m)...)
+			} else if in != nil && !e.Host.Exists(m.To) && in.hasMessages() {
+				if mb, ok := e.Host.(Mailbox); ok {
+					v := m.Value
+					if v.K == KList || v.K == KObj {
+						v = Value{}
+					}
+					mb.Post(m.To, m.Text, v)
+				}
 			}
 			continue
 		}
@@ -334,6 +357,41 @@ type InstanceState struct {
 	startIdx  int
 	startDone bool
 	tasks     []*taskState // suspended runs, by handler
+
+	eng *Engine
+	// held is how many suspended runs of this state count against
+	// Limits.SnapshotTasks until Release (or Restore).
+	held int
+	// Dropped is how many suspended runs did not fit the limits and were left
+	// out: after a reload those handlers start afresh when triggered.
+	Dropped int
+}
+
+// Release gives back the share of the saved-runs limit this state uses. Call
+// it when the state is thrown away without being restored; Restore does it
+// itself. It is safe to call twice.
+func (st *InstanceState) Release() {
+	if st != nil && st.eng != nil && st.held > 0 {
+		st.eng.snapTasks -= st.held
+		st.held = 0
+	}
+}
+
+// weight counts the values in v (list items included, a shared list once),
+// stopping when the count passes limit.
+func weight(v Value, seen map[*List]bool, left *int) {
+	if *left--; *left < 0 {
+		return
+	}
+	if v.K == KList && v.L != nil && !seen[v.L] {
+		seen[v.L] = true
+		for _, it := range v.L.Items {
+			weight(it, seen, left)
+			if *left < 0 {
+				return
+			}
+		}
+	}
 }
 
 // taskState is a suspended run in a snapshot. Times are relative, so a chunk
@@ -362,11 +420,30 @@ func (in *Instance) Snapshot() *InstanceState {
 		st.globals[i] = copyValue(v, memo)
 	}
 	if in.nWait > 0 {
+		e := in.eng
+		st.eng = e
 		st.tasks = make([]*taskState, len(in.waiting))
+		left := e.Limits.SnapshotItems
+		seen := map[*List]bool{}
 		for i, t := range in.waiting {
-			if t != nil {
-				st.tasks[i] = t.snapshot(memo)
+			if t == nil {
+				continue
 			}
+			// the memory of unloaded chunks is bounded: a run that does not fit is dropped
+			cost := left
+			for _, v := range t.stack {
+				weight(v, seen, &cost)
+			}
+			weight(t.other, seen, &cost)
+			weight(t.value, seen, &cost)
+			if cost < 0 || e.snapTasks >= e.Limits.SnapshotTasks {
+				st.Dropped++
+				continue
+			}
+			left = cost
+			e.snapTasks++
+			st.held++
+			st.tasks[i] = t.snapshot(memo)
 		}
 	}
 	return st
@@ -375,7 +452,11 @@ func (in *Instance) Snapshot() *InstanceState {
 // Restore puts a snapshot back. It reports false (and changes nothing) if the
 // snapshot belongs to another program.
 func (in *Instance) Restore(st *InstanceState) bool {
-	if st == nil || st.prog != in.prog {
+	if st == nil {
+		return false
+	}
+	if st.prog != in.prog {
+		st.Release()
 		return false
 	}
 	memo := map[*List]*List{}
@@ -386,6 +467,7 @@ func (in *Instance) Restore(st *InstanceState) bool {
 	in.ticks, in.initVar, in.initPer, in.initDone = st.ticks, st.initVar, st.initPer, st.initDone
 	in.startIdx, in.startDone = st.startIdx, st.startDone
 	in.cancelAll()
+	st.Release()
 	for i, ts := range st.tasks {
 		if ts == nil || i >= len(in.waiting) || !in.admitWait() {
 			continue // beyond the limits: the handler simply starts afresh when it is triggered
@@ -948,7 +1030,10 @@ func (t *Task) Run() (st Status, err *Error) {
 		t.steps += used
 		e.frameLeft -= used
 		if err != nil && err.Code == CodeSteps {
-			if e.frameLeft <= 0 {
+			if e.off != nil && e.frameLeft <= 0 {
+				err.Message = fmt.Sprintf("Слишком много шагов в офлайн-тике: объект вне видимой карты делает за тик не больше %d шагов.", e.off.cap)
+				err.Hint = "Объект, который живёт за кадром (Alive), должен считать мало. Проверьте «while» и «repeat»; состояние объекта сохранено."
+			} else if e.frameLeft <= 0 {
 				err.Message = fmt.Sprintf("Слишком много шагов за кадр: вся игра вместе делает не больше %d шагов в кадре.", e.Limits.FrameSteps)
 				err.Hint = "Возможно, где-то бесконечный цикл. Проверьте «while» и «repeat»."
 			} else {
@@ -1098,6 +1183,11 @@ func (t *Task) exec() *Error {
 			a := t.pop()
 			if a.K != KNum {
 				return t.failAt(fn, pc-1, wrongKind("Перед «per second»", KNum, a))
+			}
+			if e.off != nil && e.off.scale > 1 {
+				// offline "when update": one run stands for scale steps
+				t.push(Num(float64(float64(a.N/e.tickRate) * e.off.scale)))
+				break
 			}
 			t.push(Num(float64(a.N / e.tickRate)))
 		case OpNot:
@@ -2120,6 +2210,10 @@ func (t *Task) setObjVar(id ObjID, name string, v Value) *failure {
 	e := t.eng
 	if !e.Host.Exists(id) {
 		return hostFailure(ErrGone)
+	}
+	if e.off != nil && !e.off.canWrite(id) {
+		return fl(CodeOffline, "Пока объект «живёт» за пределами видимой карты, он не может менять переменные других объектов.",
+			"Читать их можно; а чтобы повлиять на мир, отправьте сообщение: send \"hit\" to Door")
 	}
 	if in := e.instanceOf(id); in != nil {
 		for i, n := range in.prog.Globals {
