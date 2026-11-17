@@ -19,6 +19,10 @@ type Input interface {
 // from the real keyboard; tests feed it by hand.
 type InputState struct {
 	held, pressed, released map[string]bool
+
+	mx, my                   float64 // cursor, in view coordinates
+	mHeld, mPressed, mReleas bool
+	mSeen                    bool // the button state has been reported at least once
 }
 
 // NewInputState returns an input with nothing pressed.
@@ -51,8 +55,53 @@ func (s *InputState) Pressed(key string) bool { return s.pressed[key] }
 // Released reports whether the key went up since the last step.
 func (s *InputState) Released(key string) bool { return s.released[key] }
 
-// Advance forgets the edges; held keys stay held.
+// Advance forgets the edges; held keys and buttons stay held.
 func (s *InputState) Advance() {
 	clear(s.pressed)
 	clear(s.released)
+	s.mPressed, s.mReleas = false, false
 }
+
+// SetMouse moves the cursor to (x, y) in view coordinates.
+func (s *InputState) SetMouse(x, y float64) { s.mx, s.my = x, y }
+
+// SetMouseHeld reports the state of the main button from a poll of the real
+// device. The first report only sets the initial state: a button that is
+// already down when the game starts (the click on the Play button that
+// launched it) is not a click in the game.
+func (s *InputState) SetMouseHeld(held bool) {
+	if !s.mSeen {
+		s.mSeen = true
+		s.mHeld = held
+		return
+	}
+	if held {
+		s.PressMouse()
+	} else {
+		s.ReleaseMouse()
+	}
+}
+
+// PressMouse reports that the main button went down (calling it while the
+// button is held does nothing).
+func (s *InputState) PressMouse() {
+	if !s.mHeld {
+		s.mHeld, s.mPressed = true, true
+	}
+}
+
+// ReleaseMouse reports that the main button went up.
+func (s *InputState) ReleaseMouse() {
+	if s.mHeld {
+		s.mHeld, s.mReleas = false, true
+	}
+}
+
+// Mouse implements MouseInput.
+func (s *InputState) Mouse() (x, y float64, held bool) { return s.mx, s.my, s.mHeld }
+
+// MousePressed implements MouseInput.
+func (s *InputState) MousePressed() bool { return s.mPressed }
+
+// MouseReleased reports whether the button went up since the last step.
+func (s *InputState) MouseReleased() bool { return s.mReleas }

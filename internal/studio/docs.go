@@ -75,6 +75,16 @@ func (s *Studio) relPath(abs string) string {
 	return filepath.ToSlash(rel)
 }
 
+// loadDoc reads the project document rel from disk. Like the runtime, it
+// refuses links and anything outside the project folder.
+func (s *Studio) loadDoc(rel string) (*scene.Scene, error) {
+	data, err := projfs.ReadFile(s.proj.dir, rel, projfs.MaxDocBytes)
+	if err != nil {
+		return nil, err
+	}
+	return project.Unmarshal(data)
+}
+
 // stash writes the current document's state back to its record.
 func (s *Studio) stash() {
 	d := s.docs[s.cur]
@@ -117,7 +127,7 @@ func (s *Studio) openDoc(rel string) {
 			return
 		}
 	}
-	sc, err := project.Load(abs)
+	sc, err := s.loadDoc(rel)
 	if err != nil {
 		s.Logf("Cannot open %s: %v", rel, err)
 		return
@@ -167,7 +177,12 @@ func (s *Studio) saveDoc(d *document) error {
 	if err != nil {
 		return err
 	}
-	if err := project.Save(d.path, data); err != nil {
+	rel, err := projfs.RelTo(s.proj.dir, d.path)
+	if err != nil {
+		return err
+	}
+	// checked and written through os.Root in one step
+	if err := projfs.WriteFile(s.proj.dir, rel, append(data, '\n')); err != nil {
 		return err
 	}
 	d.saved, d.dirty = data, false
@@ -210,9 +225,6 @@ func (s *Studio) newDocFile(typ scene.DocType, name string) error {
 	if abs == "" {
 		return errors.New("Bad name.")
 	}
-	if _, err := os.Lstat(abs); err == nil {
-		return fmt.Errorf("%s already exists.", rel)
-	}
 	sc := scene.New(name)
 	sc.Type = typ
 	if typ == scene.DocMap {
@@ -224,10 +236,10 @@ func (s *Studio) newDocFile(typ scene.DocType, name string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return err
-	}
-	if err := project.Save(abs, data); err != nil {
+	if err := projfs.CreateNew(s.proj.dir, rel, append(data, '\n')); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("%s already exists.", rel)
+		}
 		return err
 	}
 	s.refreshProject()
@@ -259,7 +271,7 @@ func (s *Studio) refScene(rel string) *scene.Scene {
 	if s.refCache == nil {
 		s.refCache = map[string]*scene.Scene{}
 	}
-	sc, err := project.Load(abs)
+	sc, err := s.loadDoc(rel)
 	if err != nil {
 		sc = nil
 	}

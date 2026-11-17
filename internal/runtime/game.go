@@ -25,6 +25,8 @@ type Game struct {
 	faces  map[int]*text.GoTextFace
 	last   time.Time
 	scale  float64 // device scale factor, for Layout
+	scrW   int     // size of the window in layout pixels, as of the last Layout
+	scrH   int
 }
 
 // NewGame prepares a game for a loaded world.
@@ -59,6 +61,8 @@ func (g *Game) Update() error {
 	}
 	if in, ok := g.Sim.World.Input.(*InputState); ok {
 		pollKeys(in)
+		w := g.Sim.World
+		pollMouse(in, Fit(g.scrW, g.scrH, w.ViewW, w.ViewH, w.ImageMode))
 	}
 	now := time.Now()
 	dt := time.Duration(0)
@@ -72,14 +76,16 @@ func (g *Game) Update() error {
 
 // Layout gives the window's size in device pixels, so that the integer scale
 // of pixel mode is a whole number of real screen pixels.
-func (g *Game) Layout(w, h int) (int, int) { return w, h }
+func (g *Game) Layout(w, h int) (int, int) { g.scrW, g.scrH = w, h; return w, h }
 
 // LayoutF is Layout in device-independent units; see Layout.
 func (g *Game) LayoutF(w, h float64) (float64, float64) {
 	if s := ebiten.Monitor().DeviceScaleFactor(); s > 0 {
 		g.scale = s
 	}
-	return math.Ceil(w * g.scale), math.Ceil(h * g.scale)
+	sw, sh := math.Ceil(w*g.scale), math.Ceil(h*g.scale)
+	g.scrW, g.scrH = int(sw), int(sh)
+	return sw, sh
 }
 
 // Draw renders the world into the view image and scales it into the window.

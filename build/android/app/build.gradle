@@ -1,0 +1,25 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.vide2d.client.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.vide2d.client'
+        minSdk 24            // must match -androidapi in build/android.sh
+        targetSdk 34
+        versionCode 1
+        versionName project.findProperty('videVersion') ?: 'dev'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Produced by build/android.sh (ebitenmobile bind).
+    implementation files('libs/videlib.aar')
+}

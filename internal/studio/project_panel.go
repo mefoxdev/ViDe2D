@@ -5,7 +5,6 @@ import (
 	"image"
 	"image/color"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -279,7 +278,11 @@ func (s *Studio) projPanel(r image.Rectangle) {
 
 	rows := s.visibleRows()
 	if len(p.top) == 0 {
-		u.Text(image.Rect(list.Min.X+8, list.Min.Y+4, list.Max.X, list.Min.Y+4+ui.LineHeight), "The project folder is empty.", u.Theme.TextDim)
+		msg := "The project folder is empty."
+		if s.nestedProblem() != "" {
+			msg = "This folder is inside game/: open the project folder's project.vide.json instead."
+		}
+		u.Text(image.Rect(list.Min.X+8, list.Min.Y+4, list.Max.X, list.Min.Y+4+ui.LineHeight), msg, u.Theme.TextDim)
 	}
 	if u.Hover(list) && u.Wheel != 0 {
 		p.scroll -= int(u.Wheel * projRowH * 2)
@@ -488,9 +491,13 @@ func (s *Studio) dropFile(rel string, kind projfs.Kind, mx, my int) {
 	}
 }
 
-func projDirFor(project string) string {
-	if project == "" {
+// projDirFor returns the project root for the file the studio was started
+// with (an absolute path): the file's own folder (projfs.FileRoot); see
+// docs/TECH.md ("Project root"). A scene in game/scenes therefore gets a root
+// that cannot see game/objects; see nestedProblem.
+func projDirFor(file string) string {
+	if file == "" {
 		return ""
 	}
-	return filepath.Dir(project)
+	return projfs.FileRoot(file)
 }

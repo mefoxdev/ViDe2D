@@ -2,50 +2,28 @@ package runtime
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/vide2d/vide-studio/internal/projfs"
 )
 
 // ProjectFile is the name of a project's main scene file.
-const ProjectFile = "project.vide.json"
+const ProjectFile = projfs.ProjectFile
 
-// ProjectRoot guesses the project folder of a document file: for a scene in
-// <root>/game/scenes/ it is <root>, otherwise the file's folder. This is the
-// folder all project-relative paths are resolved against.
-func ProjectRoot(file string) string {
-	dir := filepath.Dir(file)
-	slash := filepath.ToSlash(dir)
-	if strings.HasSuffix(slash, "/"+projfs.ScenesDir) {
-		return filepath.Dir(filepath.Dir(dir))
-	}
-	return dir
-}
-
-// Load opens the scene document file and builds its world. root is the project
-// folder; if empty it is derived by ProjectRoot.
-func Load(file, root string, opts Options) (*World, *Source, error) {
-	abs, err := filepath.Abs(file)
+// Load opens the scene document file and builds its world. The project root is
+// explicitRoot if given, otherwise the folder of the file (projfs.FileRoot; nothing above it
+// is ever looked at). Nothing may reach outside the root: the file
+// must lie inside it, and no path may contain "..", be absolute or pass a
+// symbolic link below the root.
+func Load(file, explicitRoot string, opts Options) (*World, *Source, error) {
+	root, rel, err := projfs.OpenRoot(file, explicitRoot)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("cannot open %s: %w", file, err)
 	}
-	st, err := os.Lstat(abs)
-	if err != nil {
-		return nil, nil, fmt.Errorf("cannot open %s: %w", file, unwrapPath(err))
-	}
-	if !st.Mode().IsRegular() {
-		return nil, nil, fmt.Errorf("%s is not a regular file", file)
-	}
-	if root == "" {
-		root = ProjectRoot(abs)
-	}
-	sc, err := readDoc(abs)
+	src := NewSource(root)
+	sc, err := src.Doc(rel)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", file, err)
 	}
-	src := NewSource(root)
 	w, err := NewWorld(src, sc, opts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", file, err)

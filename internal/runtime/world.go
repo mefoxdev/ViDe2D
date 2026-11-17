@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/vide2d/vide-studio/internal/scene"
+	"github.com/vide2d/vide-studio/internal/tdsl/vm"
 )
 
 // ChunkKey is the coordinate of a map chunk.
@@ -70,22 +71,30 @@ type World struct {
 	// Input is the keyboard state scripts read; nil without scripts.
 	Input Input
 
-	src       *Source
-	opts      Options
-	mapStatic []*Entity    // map content that is always present
-	scene     *scene.Scene // the scene document, for the names of all objects
-	mapDoc    *scene.Scene
-	chunks    map[ChunkKey]*chunkUnit
-	order     []ChunkKey // all chunks, sorted by (Y, X)
-	content   []*Entity  // the scene's own entities
-	scripts   *scriptRuntime
-	byID      map[int]*Entity // live entities that scripts can address
-	destroyQ  []*Entity
-	nextID    int
-	live      int
-	synced    bool
-	syncCamX  int
-	syncCamY  int
+	src         *Source
+	opts        Options
+	mapStatic   []*Entity    // map content that is always present
+	scene       *scene.Scene // the scene document, for the names of all objects
+	mapDoc      *scene.Scene
+	chunks      map[ChunkKey]*chunkUnit
+	order       []ChunkKey // all chunks, sorted by (Y, X)
+	content     []*Entity  // the scene's own entities
+	scripts     *scriptRuntime
+	byID        map[int]*Entity // live entities that scripts can address
+	destroyQ    []*Entity
+	pending     []*Entity // spawned this step: alive for scripts, joined to the world at the end of the step
+	spawnLive   int       // live objects made by "spawn" (pending ones included)
+	templates   map[string]*scene.Node
+	nodes       []*scene.Node // see allNodes
+	coll        collider
+	bbWork      int // see takeWork
+	rebuildWork int
+	spawnDepth  int // nesting of "spawn" inside the start-up code of spawned objects
+	nextID      int
+	live        int
+	synced      bool
+	syncCamX    int
+	syncCamY    int
 }
 
 // NewWorld builds the world of scene sc (a scene document) from source src.
@@ -188,7 +197,7 @@ func (w *World) expandNode(n *scene.Node, ox, oy int, parent *Entity, depth int,
 // load): the live count and the id index are rolled back.
 func (w *World) discard(ents []*Entity) {
 	for _, e := range ents {
-		delete(w.byID, e.ID)
+		w.forget(e)
 	}
 	w.live -= len(ents)
 }
@@ -330,6 +339,7 @@ func (w *World) LoadChunk(cx, cy int) error {
 	}
 	u.ents, u.loaded = ents, true
 	u.state.restore(ents)
+	w.collChanged()
 	return nil
 }
 
@@ -343,9 +353,10 @@ func (w *World) UnloadChunk(cx, cy int) bool {
 	u.state.save(u.ents)
 	w.live -= len(u.ents)
 	for _, e := range u.ents {
-		delete(w.byID, e.ID)
+		w.forget(e)
 	}
 	u.ents, u.loaded = nil, false
+	w.collChanged()
 	return true
 }
 
@@ -434,7 +445,7 @@ func (w *World) Step() error {
 	for _, e := range steps {
 		e.Behavior.Step(w, e)
 	}
-	for ph := PhaseStart; ph <= PhaseTimers; ph++ {
+	for ph := PhaseInit; ph <= PhaseTouches; ph++ {
 		for _, e := range steps {
 			if p, ok := e.Behavior.(Phased); ok {
 				p.RunPhase(w, e, ph)
@@ -442,9 +453,11 @@ func (w *World) Step() error {
 		}
 	}
 	if w.scripts != nil {
+		w.scripts.deliverMessages()
 		w.scripts.endFrame()
 	}
 	w.Each(func(e *Entity) { e.fresh = false })
+	w.flushSpawns()
 	w.flushDestroyed()
 	if w.Input != nil {
 		w.Input.Advance()
@@ -494,6 +507,7 @@ func (w *World) Place(e *Entity, x, y float64, teleport bool) {
 		}
 		stack = append(stack, c.Children...)
 	}
+	w.geoChanged(e, true)
 }
 
 // LocalPos is the position of e relative to its parent group, which is what
@@ -523,7 +537,7 @@ func (w *World) flushDestroyed() {
 	for _, e := range w.destroyQ {
 		gone[e] = true
 		e.Dead = true
-		delete(w.byID, e.ID)
+		w.forget(e)
 		if e.chunk != nil {
 			e.chunk.state.Destroyed[e.key] = true
 			delete(e.chunk.state.Entities, e.key)
@@ -534,6 +548,9 @@ func (w *World) flushDestroyed() {
 	}
 	w.destroyQ = w.destroyQ[:0]
 	for p := range parents {
+		for q := p; q != nil; q = q.Parent {
+			q.bbOK = false // the group lost members
+		}
 		kids := p.Children[:0]
 		for _, c := range p.Children {
 			if !c.Dead {
@@ -560,6 +577,32 @@ func (w *World) flushDestroyed() {
 	for _, u := range w.chunks {
 		u.ents = drop(u.ents)
 	}
+	w.collChanged()
+}
+
+// forget removes a destroyed or unloaded entity from the indexes.
+func (w *World) forget(e *Entity) {
+	delete(w.byID, e.ID)
+	if e.spawned {
+		w.spawnLive--
+		e.spawned = false
+	}
+	if w.scripts != nil {
+		w.scripts.eng.Detach(vm.ObjID(e.ID))
+	}
+}
+
+// flushSpawns lets the objects made by "spawn" in this step join the world.
+func (w *World) flushSpawns() {
+	if len(w.pending) == 0 {
+		return
+	}
+	for _, e := range w.pending {
+		e.pending = false
+	}
+	w.content = append(w.content, w.pending...)
+	w.pending = w.pending[:0]
+	w.collChanged()
 }
 
 // Entity returns the live entity with the given id, or nil.

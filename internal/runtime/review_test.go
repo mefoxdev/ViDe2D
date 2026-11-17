@@ -132,7 +132,8 @@ func TestScriptNamesDoNotDependOnLoadedChunks(t *testing.T) {
 		t.Fatal("test needs chunk (0,3) unloaded")
 	}
 	steps(t, w, 1)
-	if sink.count("не запущен") != 0 || sink.count("TD499") != 1 {
+	// g03 is not in the world now: it is "nothing", so reading its x is TD303 (not an unknown name)
+	if sink.count("не запущен") != 0 || sink.count("TD303") != 1 {
 		t.Fatalf("log: %s", sink.all())
 	}
 }

@@ -3,6 +3,9 @@
 package projfs
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -97,10 +100,21 @@ func Scan(root string) (top []*Entry, truncated bool) {
 	if root == "" {
 		return nil, false
 	}
+	r, err := OpenDir(root)
+	if err != nil {
+		return nil, false
+	}
+	defer r.Close()
 	count := 0
-	var walk func(dir, rel string, depth int) []*Entry
-	walk = func(dir, rel string, depth int) []*Entry {
-		des, err := os.ReadDir(dir)
+	var walk func(rel string, depth int) []*Entry
+	walk = func(rel string, depth int) []*Entry {
+		dirRel := rel
+		if dirRel == "" {
+			dirRel = "."
+		}
+		// Only real folders are descended into (links are skipped below), and
+		// the listing goes through os.Root, so it cannot leave the project.
+		des, err := r.readDir(dirRel, MaxEntries+1)
 		if err != nil {
 			return nil
 		}
@@ -122,11 +136,11 @@ func Scan(root string) (top []*Entry, truncated bool) {
 				if depth+1 >= MaxDepth {
 					truncated = true
 				} else {
-					e.Children = walk(filepath.Join(dir, name), e.Path, depth+1)
+					e.Children = walk(e.Path, depth+1)
 				}
 			case de.Type().IsRegular():
 				e.Kind = ClassifyPath(e.Path)
-				if info, err := de.Info(); err == nil {
+				if info, err := r.r.Lstat(e.Path); err == nil {
 					e.Size = info.Size()
 				}
 				count++
@@ -144,7 +158,7 @@ func Scan(root string) (top []*Entry, truncated bool) {
 		})
 		return out
 	}
-	return walk(root, "", 0), truncated
+	return walk("", 0), truncated
 }
 
 // Walk visits entries depth-first in display order.
@@ -198,4 +212,111 @@ func Resolve(root, rel string) string {
 func IsRegular(file string) bool {
 	st, err := os.Lstat(file)
 	return err == nil && st.Mode().IsRegular()
+}
+
+// ProjectFile is the name of a project's main file.
+const ProjectFile = "project.vide.json"
+
+// SafeFile resolves the project-relative path rel to an existing regular file
+// below root. Every component below root must exist and must not be a symbolic
+// link, junction or other irregular entry; ".." and absolute paths are
+// rejected. (root itself may be reached through links: it is the folder the
+// user chose.) The check goes through os.Root; to read the file, prefer
+// OpenFile/ReadFile, which check and open in one step.
+func SafeFile(root, rel string) (string, error) {
+	file := Resolve(root, rel)
+	if file == "" {
+		return "", fmt.Errorf("unsafe path %q", rel)
+	}
+	if _, err := with(root, func(r *Root) (struct{}, error) { _, err := r.Stat(rel); return struct{}{}, err }); err != nil {
+		return "", err
+	}
+	return file, nil
+}
+
+// RelTo returns the project-relative slash path of file below root. Both must
+// be absolute and clean (the check is lexical); it fails if file is not
+// strictly inside root.
+func RelTo(root, file string) (string, error) {
+	rel, err := filepath.Rel(root, file)
+	if err != nil {
+		return "", fmt.Errorf("%s is not inside the project folder %s", file, root)
+	}
+	rel = filepath.ToSlash(rel)
+	if !ValidRel(rel) {
+		return "", fmt.Errorf("%s is not inside the project folder %s", file, root)
+	}
+	return rel, nil
+}
+
+// FileRoot is the project root of a document opened without an explicit root:
+// the file's own folder, nothing above it. (The project file is deliberately
+// not searched for in parent folders: a game must not be able to reach
+// outside the folder the user opened.) file must be absolute.
+func FileRoot(file string) string { return filepath.Dir(filepath.Clean(file)) }
+
+// NestedHint returns a ready-to-print error message if file, opened without an
+// explicit root, lies in game/scenes, game/objects or game/maps. Its folder
+// would become the root, and the references to game/objects/... inside it
+// could never be found. It returns "" otherwise.
+func NestedHint(file string) string {
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(abs)
+	for _, sub := range []string{ScenesDir, ObjectsDir, MapsDir} {
+		tail := filepath.FromSlash(sub)
+		if strings.HasSuffix(strings.ToLower(dir), strings.ToLower(string(filepath.Separator)+tail)) {
+			proj := dir[:len(dir)-len(tail)-1]
+			return fmt.Sprintf("%s is inside %s: the folder of the opened file is the project root, so the project's other files would not be found. Open the project folder's %s or pass -root %s", filepath.Base(abs), sub, ProjectFile, proj)
+		}
+	}
+	return ""
+}
+
+// OpenRoot resolves a document file and an optional explicit root (empty: the
+// file's own folder, see FileRoot) into the absolute project root and the
+// file's project-relative path. The file must lie inside the root and be
+// reached without symbolic links below the root.
+func OpenRoot(file, explicitRoot string) (root, rel string, err error) {
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		return "", "", err
+	}
+	if explicitRoot != "" {
+		root, err = filepath.Abs(explicitRoot)
+		if err != nil {
+			return "", "", err
+		}
+		st, serr := os.Stat(root)
+		if serr != nil || !st.IsDir() {
+			return "", "", fmt.Errorf("project root %s is not a folder", explicitRoot)
+		}
+	} else {
+		root = FileRoot(abs)
+	}
+	rel, err = RelTo(root, abs)
+	if err != nil {
+		return "", "", fmt.Errorf("the scene %s is outside the project root %s (the root must contain the scene file)", file, root)
+	}
+	if _, err = SafeFile(root, rel); err != nil {
+		return "", "", err
+	}
+	return root, rel, nil
+}
+
+// NoLinks checks that no existing component of rel below root is a symbolic
+// link or junction (components that do not exist yet are fine). Use it before
+// creating or writing a file; better, write through WriteFile/CreateNew, which
+// check and write in one step.
+func NoLinks(root, rel string) error {
+	if Resolve(root, rel) == "" {
+		return fmt.Errorf("unsafe path %q", rel)
+	}
+	_, err := with(root, func(r *Root) (struct{}, error) { return struct{}{}, r.NoLinks(rel) })
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // the root itself does not exist yet
+	}
+	return err
 }

@@ -18,6 +18,23 @@ type HandlerInfo struct {
 	Supported bool          // false: the event does not exist in this version; the handler never runs
 	fn        *Func
 	period    *Func // for EventEvery: computes the period in seconds
+	arg       *Func // for touch, stop touching and message: computes the argument
+	argText   string
+	argConst  bool // the argument is a plain text: argText, no computation
+}
+
+// SharedDef is a "shared" declaration of a script.
+type SharedDef struct {
+	Name string
+	Line int
+	Init *Func
+}
+
+// Lib is a parsed script whose "to" commands are linked into a program that
+// says "use" for it. File and Src are kept for error messages.
+type Lib struct {
+	File, Src string
+	Script    *tdsl.Script
 }
 
 // Program is a compiled script. It is immutable and may be shared by the
@@ -31,6 +48,10 @@ type Program struct {
 	Consts   []Value
 	Funcs    []*Func // "to" commands
 	Globals  []string
+	// Shared lists the "shared" variables this script declares.
+	Shared []SharedDef
+	// Uses lists the paths of the "use" lines, as written.
+	Uses []string
 	// Inits[i] computes and stores the initial value of the object variable
 	// Globals[i]; each is run on its own, so a failing one leaves only its
 	// own variable at nothing.
@@ -43,8 +64,14 @@ type Program struct {
 // text, used only to quote lines in error messages. Compile never fails: what
 // the VM cannot run becomes an OpFail instruction that reports an error when
 // (and only if) it is reached.
-func Compile(file, src string, s *tdsl.Script) *Program {
-	c := &compiler{
+func Compile(file, src string, s *tdsl.Script) *Program { return CompileLibs(file, src, s, nil) }
+
+// CompileLibs is Compile with the scripts named by "use" linked in: their "to"
+// commands become commands of the program. A command of the script itself wins
+// over a library command of the same name; between libraries the first wins.
+// Only "to" items of a library count.
+func CompileLibs(file, src string, s *tdsl.Script, libs []Lib) *Program {
+	c := &compiler{libs: libs,
 		p:       &Program{File: file, lines: strings.Split(strings.TrimPrefix(src, "\xef\xbb\xbf"), "\n")},
 		globals: map[string]int{}, shared: map[string]bool{}, actions: map[string]int{},
 		constNum: map[uint64]int{}, constText: map[string]int{}, warned: map[string]bool{},
@@ -69,6 +96,70 @@ func CompileSource(file, src string, env *tdsl.Env) (*Program, []*tdsl.Error) {
 	return Compile(file, src, s), nil
 }
 
+// Loader reads the script named in a "use" line (the path as written there).
+type Loader func(path string) (file, src string, err error)
+
+// MaxUses bounds the "use" lines a script may have.
+const MaxUses = 16
+
+// CompileSourceLibs is CompileSource that also links the scripts named by
+// "use". A library that cannot be read, has errors, or holds anything but "to"
+// commands is reported in Program.Warnings and (in the first two cases)
+// skipped; what is wrong in it shows when a command from it is called.
+func CompileSourceLibs(file, src string, env *tdsl.Env, load Loader) (*Program, []*tdsl.Error) {
+	s, errs := tdsl.Parse(src)
+	if len(errs) == 0 {
+		errs = tdsl.Check(s, env)
+	}
+	if len(errs) > 0 {
+		for _, e := range errs {
+			e.File = file
+		}
+		return nil, errs
+	}
+	var libs []Lib
+	var warns []string
+	seen := map[string]bool{}
+	for _, it := range s.Items {
+		u, ok := it.(*tdsl.UseDecl)
+		if !ok || load == nil || seen[u.Path] {
+			continue
+		}
+		seen[u.Path] = true
+		if len(seen) > MaxUses {
+			warns = append(warns, fmt.Sprintf("%s, строка %d: слишком много строк «use» (не больше %d).", file, u.Line, MaxUses))
+			break
+		}
+		lf, ls, err := load(u.Path)
+		if err != nil {
+			warns = append(warns, fmt.Sprintf("%s, строка %d: не могу подключить «%s»: %v.", file, u.Line, u.Path, err))
+			continue
+		}
+		lscript, lerrs := tdsl.Parse(ls)
+		if len(lerrs) == 0 {
+			lerrs = tdsl.Check(lscript, env)
+		}
+		if len(lerrs) > 0 {
+			e := lerrs[0]
+			warns = append(warns, fmt.Sprintf("%s, строка %d: в подключённом файле %s ошибка (%s): %s", file, u.Line, lf, e.Code, e.Message))
+			continue
+		}
+		bad := false
+		for _, li := range lscript.Items {
+			if _, ok := li.(*tdsl.ActionDef); !ok {
+				bad = true
+			}
+		}
+		if bad {
+			warns = append(warns, fmt.Sprintf("%s, строка %d: в подключаемом файле %s допустимы только команды «to»; остальное игнорируется.", file, u.Line, lf))
+		}
+		libs = append(libs, Lib{File: lf, Src: ls, Script: lscript})
+	}
+	p := CompileLibs(file, src, s, libs)
+	p.Warnings = append(p.Warnings, warns...)
+	return p, nil
+}
+
 type loopCtx struct {
 	breaks, conts []int
 }
@@ -79,6 +170,8 @@ type compiler struct {
 	shared    map[string]bool
 	actions   map[string]int
 	actionDef []*tdsl.ActionDef
+	actionLib []*Lib // the library of each action, nil for the script's own
+	libs      []Lib
 	constNum  map[uint64]int
 	constText map[string]int
 	warned    map[string]bool
@@ -99,20 +192,26 @@ func (c *compiler) run(s *tdsl.Script) {
 			}
 		case *tdsl.SharedDecl:
 			c.shared[n.Name] = true
-			c.warn(n.Line, "общие переменные (shared)")
 		case *tdsl.UseDecl:
-			c.warn(n.Line, "подключение файлов (use)")
+			c.p.Uses = append(c.p.Uses, n.Path)
 		case *tdsl.ActionDef:
-			if _, dup := c.actions[n.Name]; !dup {
-				c.actions[n.Name] = len(c.p.Funcs)
-				c.p.Funcs = append(c.p.Funcs, &Func{Name: n.Name, NParams: len(n.Params)})
-				c.actionDef = append(c.actionDef, n)
+			c.addAction(n, nil)
+		}
+	}
+	for i := range c.libs {
+		lib := &c.libs[i]
+		for _, it := range lib.Script.Items {
+			if n, ok := it.(*tdsl.ActionDef); ok {
+				c.addAction(n, lib)
 			}
 		}
 	}
 	// Pass 2: bodies.
 	for i, def := range c.actionDef {
 		c.begin(c.p.Funcs[i])
+		if lib := c.actionLib[i]; lib != nil {
+			c.fn.File, c.fn.lines = lib.File, strings.Split(strings.TrimPrefix(lib.Src, "\xef\xbb\xbf"), "\n")
+		}
 		for _, prm := range def.Params {
 			c.declare(prm.Name)
 		}
@@ -134,10 +233,30 @@ func (c *compiler) run(s *tdsl.Script) {
 		}
 	}
 	for _, it := range s.Items {
+		if n, ok := it.(*tdsl.SharedDecl); ok {
+			init := &Func{Name: "<shared " + n.Name + ">"}
+			c.begin(init)
+			c.expr(n.Value)
+			c.emit(exprSpan(n.Value), OpReturn, 0, 0)
+			c.end(tdsl.Pos{})
+			c.p.Shared = append(c.p.Shared, SharedDef{Name: n.Name, Line: n.Line, Init: init})
+		}
+	}
+	for _, it := range s.Items {
 		if h, ok := it.(*tdsl.Handler); ok {
 			c.handler(h)
 		}
 	}
+}
+
+func (c *compiler) addAction(n *tdsl.ActionDef, lib *Lib) {
+	if _, dup := c.actions[n.Name]; dup {
+		return
+	}
+	c.actions[n.Name] = len(c.p.Funcs)
+	c.p.Funcs = append(c.p.Funcs, &Func{Name: n.Name, NParams: len(n.Params)})
+	c.actionDef = append(c.actionDef, n)
+	c.actionLib = append(c.actionLib, lib)
 }
 
 func (c *compiler) handler(h *tdsl.Handler) {
@@ -156,17 +275,13 @@ func (c *compiler) handler(h *tdsl.Handler) {
 	case tdsl.EventEvery:
 		info.Desc = "when every " + h.Arg.String() + " seconds"
 	case tdsl.EventClick:
-		info.Desc, info.Supported = "when click", false
-		c.warn(h.Line, "событие click (клики мышью)")
+		info.Desc = "when click"
 	case tdsl.EventTouch:
-		info.Desc, info.Supported = "when touch "+h.Arg.String(), false
-		c.warn(h.Line, "событие touch (касания)")
+		info.Desc = "when touch " + h.Arg.String()
 	case tdsl.EventStopTouching:
-		info.Desc, info.Supported = "when stop touching "+h.Arg.String(), false
-		c.warn(h.Line, "событие stop touching (касания)")
+		info.Desc = "when stop touching " + h.Arg.String()
 	case tdsl.EventMessage:
-		info.Desc, info.Supported = "when message "+h.Arg.String(), false
-		c.warn(h.Line, "события message (сообщения)")
+		info.Desc = "when message " + h.Arg.String()
 	}
 	// The body of an unsupported handler is still compiled: it is the
 	// documentation of what would run, and it keeps the compiler total.
@@ -180,6 +295,20 @@ func (c *compiler) handler(h *tdsl.Handler) {
 		c.expr(h.Arg)
 		c.emit(exprSpan(h.Arg), OpReturn, 0, 0)
 		c.end(h.Pos)
+	}
+	if (h.Event == tdsl.EventTouch || h.Event == tdsl.EventStopTouching || h.Event == tdsl.EventMessage) && h.Arg != nil {
+		if txt, ok := h.Arg.(*tdsl.Text); ok {
+			if lit, ok := txt.Literal(); ok {
+				info.argText, info.argConst = lit, true
+			}
+		}
+		if !info.argConst {
+			info.arg = &Func{Name: info.Desc + " (аргумент)"}
+			c.begin(info.arg)
+			c.expr(h.Arg)
+			c.emit(exprSpan(h.Arg), OpReturn, 0, 0)
+			c.end(h.Pos)
+		}
 	}
 	c.p.Handlers = append(c.p.Handlers, info)
 }
@@ -367,7 +496,7 @@ const (
 	refLocal
 	refGlobal
 	refProp
-	refShared
+	refName // a shared variable or a scene object, decided when the script runs
 )
 
 type ref struct {
@@ -388,23 +517,7 @@ func (c *compiler) resolve(name string) ref {
 	if p, ok := propByName[name]; ok {
 		return ref{kind: refProp, prop: p}
 	}
-	if c.shared[name] {
-		return ref{kind: refShared}
-	}
-	return ref{}
-}
-
-// failName reports a name that is not a variable or property of the object:
-// a scene object (not supported yet) or the mouse.
-func (c *compiler) failName(sp Span, name string) {
-	switch {
-	case name == "mouse":
-		c.unsupported(sp, "мышь (mouse)")
-	case c.shared[name]:
-		c.unsupported(sp, "общие переменные (shared): «"+name+"»")
-	default:
-		c.unsupported(sp, "обращение к другим объектам: «"+name+"»")
-	}
+	return ref{kind: refName}
 }
 
 // ---- statements ----
@@ -477,12 +590,13 @@ func (c *compiler) stmt(s tdsl.Stmt) {
 		c.emit(exprSpan(n.X), OpPop, 0, 0)
 	case *tdsl.Move:
 		sp := spanAt(n.Pos, 4)
-		if n.Avoiding != nil {
-			c.unsupported(sp, "move … avoiding (обход объектов)")
-			return
-		}
 		c.expr(n.Dir)
 		c.expr(n.By)
+		if n.Avoiding != nil {
+			c.expr(n.Avoiding)
+			c.emit(sp, OpMoveAvoid, 0, 0)
+			return
+		}
 		c.emit(sp, OpMove, 0, 0)
 	case *tdsl.MoveTo:
 		c.expr(n.X)
@@ -522,7 +636,20 @@ func (c *compiler) stmt(s tdsl.Stmt) {
 	case *tdsl.StopMusic:
 		c.unsupported(spanAt(n.Pos, 4), "stop music (звуки и музыка)")
 	case *tdsl.Send:
-		c.unsupported(spanAt(n.Pos, 4), "send (сообщения)")
+		c.expr(n.Message)
+		if n.With != nil {
+			c.expr(n.With)
+		} else {
+			c.emit(spanAt(n.Pos, 4), OpNothing, 0, 0)
+		}
+		hasTo := 0
+		if n.To != nil {
+			c.expr(n.To)
+			hasTo = 1
+		} else {
+			c.emit(spanAt(n.Pos, 4), OpNothing, 0, 0)
+		}
+		c.emit(spanAt(n.Pos, 4), OpSend, 0, hasTo)
 	case *tdsl.GoToScene:
 		c.unsupported(spanAt(n.Pos, 2), "go to scene (переход между сценами)")
 	case *tdsl.RestartScene:
@@ -693,8 +820,15 @@ func (c *compiler) assign(n *tdsl.Assign) {
 				c.emit(whole, op, 0, 0)
 			}
 			c.emit(tsp, OpSetProp, int(r.prop), 0)
-		default:
-			c.failName(tsp, t.Name)
+		default: // a shared variable
+			if compound {
+				c.emit(tsp, OpName, c.constString(t.Name), 0)
+			}
+			c.expr(n.Value)
+			if compound {
+				c.emit(whole, op, 0, 0)
+			}
+			c.emit(tsp, OpSetName, c.constString(t.Name), 0)
 		}
 	case *tdsl.Member:
 		tsp := exprSpan(t)
@@ -770,9 +904,9 @@ func (c *compiler) expr(e tdsl.Expr) {
 	case *tdsl.Self:
 		c.emit(sp, OpSelf, 0, 0)
 	case *tdsl.Other:
-		c.unsupported(sp, "other (второй объект касания)")
+		c.emit(sp, OpOther, 0, 0)
 	case *tdsl.ValueRef:
-		c.unsupported(sp, "value (значение сообщения)")
+		c.emit(sp, OpValue, 0, 0)
 	case *tdsl.Ident:
 		r := c.resolve(n.Name)
 		switch r.kind {
@@ -784,7 +918,7 @@ func (c *compiler) expr(e tdsl.Expr) {
 			c.emit(sp, OpSelf, 0, 0)
 			c.emit(sp, OpGetProp, int(r.prop), 0)
 		default:
-			c.failName(sp, n.Name)
+			c.emit(sp, OpName, c.constString(n.Name), 0)
 		}
 	case *tdsl.Unary:
 		c.expr(n.X)
@@ -799,6 +933,19 @@ func (c *compiler) expr(e tdsl.Expr) {
 		c.expr(n.X)
 		c.emit(sp, OpPerSecond, 0, 0)
 	case *tdsl.Member:
+		if id, ok := n.X.(*tdsl.Ident); ok && id.Name == "mouse" && c.resolve("mouse").kind == refName {
+			switch n.Name {
+			case "x":
+				c.emit(sp, OpMouse, 0, 0)
+			case "y":
+				c.emit(sp, OpMouse, 1, 0)
+			case "held":
+				c.emit(sp, OpMouse, 2, 0)
+			default:
+				c.mistake(sp, CodeNoProp, "У мыши нет свойства «"+n.Name+"»: есть mouse.x, mouse.y и mouse.held.")
+			}
+			return
+		}
 		c.expr(n.X)
 		c.emit(sp, OpMember, c.constString(n.Name), int(propByName[n.Name]))
 	case *tdsl.Index:
@@ -819,10 +966,23 @@ func (c *compiler) expr(e tdsl.Expr) {
 	case *tdsl.KeyDown:
 		c.emit(sp, OpKey, c.constString(n.Key), 0)
 	case *tdsl.Spawn:
-		c.unsupported(sp, "spawn (создание объектов)")
+		c.spawn(n, sp)
 	default:
 		c.unsupported(sp, fmt.Sprintf("выражение %T", e))
 	}
+}
+
+// spawn compiles "spawn template at x, y". A bare name stands for the template
+// of that name (templates are not objects of the running scene).
+func (c *compiler) spawn(n *tdsl.Spawn, sp Span) {
+	if id, ok := n.Template.(*tdsl.Ident); ok && c.resolve(id.Name).kind == refName {
+		c.emit(exprSpan(id), OpConst, c.constString(id.Name), 0)
+	} else {
+		c.expr(n.Template)
+	}
+	c.expr(n.X)
+	c.expr(n.Y)
+	c.emit(spanAt(n.Pos, 5), OpSpawn, 0, 0)
 }
 
 func (c *compiler) binary(n *tdsl.Binary, sp Span) {
@@ -860,7 +1020,7 @@ func (c *compiler) call(n *tdsl.Call, sp Span) {
 		return
 	}
 	if id, ok := builtinIDs[n.Name]; ok {
-		if len(n.Args) != builtinArgs[id] {
+		if mx, ok := builtinMax[id]; (!ok && len(n.Args) != builtinArgs[id]) || (ok && (len(n.Args) < builtinArgs[id] || len(n.Args) > mx)) {
 			c.mistake(nameSp, "TD203", fmt.Sprintf("Функция «%s» принимает %d %s, а передано %d.",
 				n.Name, builtinArgs[id], plural(builtinArgs[id], "значение", "значения", "значений"), len(n.Args)))
 			return
@@ -875,5 +1035,5 @@ func (c *compiler) call(n *tdsl.Call, sp Span) {
 		c.unsupported(nameSp, what)
 		return
 	}
-	c.unsupported(nameSp, "команда или функция «"+n.Name+"» (возможно, из use)")
+	c.mistake(nameSp, CodeUnknownName, "Я не знаю команды или функции «"+n.Name+"».")
 }

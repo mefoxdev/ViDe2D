@@ -14,7 +14,6 @@ import (
 
 	"github.com/vide2d/vide-studio/internal/clip"
 	"github.com/vide2d/vide-studio/internal/codeedit"
-	"github.com/vide2d/vide-studio/internal/project"
 	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/scene"
 	"github.com/vide2d/vide-studio/internal/tdsl"
@@ -82,7 +81,7 @@ func (s *Studio) openInCode(rel string) {
 		s.Logf("Cannot open %s: the file is larger than %d KB.", rel, codeedit.MaxBytes/1024)
 		return
 	}
-	data, err := os.ReadFile(file)
+	data, err := s.readScript(rel, codeedit.MaxBytes)
 	if err != nil {
 		s.Logf("Cannot open %s: %v", rel, err)
 		return
@@ -114,7 +113,7 @@ func (s *Studio) saveCode() {
 		s.Logf("Cannot save: bad script path.")
 		return
 	}
-	if err := project.WriteAtomic(file, []byte(c.buf.Text())); err != nil {
+	if err := projfs.WriteFile(s.proj.dir, c.rel, []byte(c.buf.Text())); err != nil {
 		s.Logf("Save failed: %v", err)
 		return
 	}
@@ -149,7 +148,7 @@ func (s *Studio) refreshCodeEnv() {
 		if f.Path == c.rel {
 			continue
 		}
-		data, err := os.ReadFile(s.scriptFile(f.Path))
+		data, err := s.readScript(f.Path, codeedit.MaxBytes)
 		if err != nil || len(data) > codeedit.MaxBytes {
 			continue
 		}

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode"
 
@@ -33,7 +32,18 @@ func (s *Studio) scriptFile(rel string) string {
 	if !assets.ValidRelPath(rel, scriptExt) {
 		return ""
 	}
+	if projfs.NoLinks(s.proj.dir, rel) != nil { // no links on the way
+		return ""
+	}
 	return projfs.Resolve(s.proj.dir, rel)
+}
+
+// readScript reads the script rel (check and open in one step, at most max bytes).
+func (s *Studio) readScript(rel string, max int64) ([]byte, error) {
+	if !assets.ValidRelPath(rel, scriptExt) {
+		return nil, fmt.Errorf("not a valid script path %q", rel)
+	}
+	return projfs.ReadFile(s.proj.dir, rel, max)
 }
 
 // scriptExists reports whether rel names an existing regular file.
@@ -65,10 +75,6 @@ func (s *Studio) newScript(n *scene.Node) error {
 	if s.proj.dir == "" {
 		return errors.New("this project has no folder, so scripts cannot be created")
 	}
-	dir := filepath.Join(s.proj.dir, "scripts")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	stem := safeFileName(n.Name)
 	content := fmt.Sprintf("# Script for %s\n\nwhen start\n  print \"{name} is ready\"\n", strings.NewReplacer("\n", " ", "\r", " ").Replace(n.Name))
 	for i := 1; i < 1000; i++ {
@@ -76,19 +82,12 @@ func (s *Studio) newScript(n *scene.Node) error {
 		if i > 1 {
 			rel = fmt.Sprintf("%s%d%s", stem, i, scriptExt)
 		}
-		f, err := os.OpenFile(filepath.Join(dir, rel), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		err := projfs.CreateNew(s.proj.dir, "scripts/"+rel, []byte(content)) // checked, exclusive, inside the project
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}
 		if err != nil {
 			return err
-		}
-		_, werr := f.WriteString(content)
-		if cerr := f.Close(); werr == nil {
-			werr = cerr
-		}
-		if werr != nil {
-			return werr
 		}
 		n.Script = "scripts/" + rel
 		return nil

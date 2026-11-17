@@ -20,6 +20,9 @@ func FuzzRun(f *testing.F) {
 		"when every 0.1 seconds\n  x += 1\nwhen key space pressed\n  destroy\n",
 		"when start\n  print [1, 2][3] / 0\n",
 		"when start\n  for each i in 1 to 1e9\n    next round\n",
+		"shared n = 0\nwhen message \"a\"\n  n += 1\n  send \"a\" with [n]\nwhen start\n  send \"a\"\n",
+		"when touch \"t\"\n  print other\nwhen stop touching \"t\"\n  print other.x\nwhen click\n  print mouse.x\n",
+		"when update\n  move left by 3 avoiding \"w\"\n  var o = spawn \"S\" at 1, 2\n  print find(\"z\")\n  print all(\"a\")\n",
 	} {
 		f.Add(s)
 	}
@@ -40,7 +43,7 @@ func FuzzRun(f *testing.F) {
 		h.held["space"] = true
 		h.pressed["space"] = true
 		e := NewEngine(h)
-		e.Limits = Limits{FrameSteps: 3000, HandlerSteps: 1000, CallDepth: 16, ListItems: 200, TextChars: 200}
+		e.Limits = Limits{FrameSteps: 3000, HandlerSteps: 1000, CallDepth: 16, ListItems: 200, TextChars: 200, SendsPerFrame: 20, Backlog: 50, Objects: 10}
 		in := e.NewInstance(Compile("fuzz.tdsl", src, s), 1)
 		for i := 0; i < 8; i++ {
 			for _, er := range step(e, in) {

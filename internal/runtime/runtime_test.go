@@ -383,16 +383,6 @@ func TestFit(t *testing.T) {
 	}
 }
 
-func TestProjectRoot(t *testing.T) {
-	sep := string(filepath.Separator)
-	if got := ProjectRoot(filepath.FromSlash("/p/game/scenes/l.vide.json")); got != sep+"p" {
-		t.Fatal(got)
-	}
-	if got := ProjectRoot(filepath.FromSlash("/p/project.vide.json")); got != sep+"p" {
-		t.Fatal(got)
-	}
-}
-
 func TestDemoProjectLoads(t *testing.T) {
 	file := filepath.Join("..", "..", "examples", "demo", "project.vide.json")
 	w, _, err := Load(file, "", Options{})

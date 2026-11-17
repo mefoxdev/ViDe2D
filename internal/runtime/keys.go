@@ -45,3 +45,17 @@ func pollKeys(in *InputState) {
 		}
 	}
 }
+
+// pollMouse copies the state of the real mouse (or the first finger on a touch
+// screen) into in. The cursor is given in window pixels; p says where the view
+// lies in the window, so the scripts see view coordinates.
+func pollMouse(in *InputState, p Placement) {
+	x, y := ebiten.CursorPosition()
+	held := ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft)
+	if ids := ebiten.AppendTouchIDs(nil); len(ids) > 0 {
+		x, y = ebiten.TouchPosition(ids[0])
+		held = true
+	}
+	in.SetMouse(p.ToView(float64(x), float64(y)))
+	in.SetMouseHeld(held)
+}

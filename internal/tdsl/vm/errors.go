@@ -19,6 +19,8 @@ const (
 	CodeGone        = "TD303"
 	CodeSteps       = "TD401"
 	CodeTooBig      = "TD402"
+	CodeUnknownName = "TD101"
+	CodeObjects     = "TD403"
 	CodeDeep        = "TD404"
 	CodeNoProp      = "TD106"
 	CodeReadOnly    = "TD107"

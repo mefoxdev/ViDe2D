@@ -753,40 +753,22 @@ func TestPerSecondMovementAcrossTickRates(t *testing.T) {
 }
 
 func TestUnsupportedFeaturesFailCleanly(t *testing.T) {
-	src := `shared coins = 0
-use "helpers.tdsl"
-when touch "coin"
-  print "never"
-when click
-  print "never"
-when message "hi"
-  print "never"
-when start
+	src := `when start
   print "before"
   wait 1 second
   print "after"
 when update
   play sound "a.wav"
 when every 1 seconds
-  send "x"
+  go to scene "x"
 `
 	h := newHost(60)
 	prog, errs := CompileSource("t.tdsl", src, nil)
 	if len(errs) > 0 {
 		t.Fatal(errs[0])
 	}
-	if len(prog.Warnings) < 5 {
+	if len(prog.Warnings) != 3 {
 		t.Fatalf("warnings: %v", prog.Warnings)
-	}
-	supported := map[string]bool{}
-	for _, hd := range prog.Handlers {
-		supported[hd.Desc] = hd.Supported
-	}
-	for desc, want := range map[string]bool{`when touch "coin"`: false, "when click": false, `when message "hi"`: false,
-		"when start": true, "when update": true, "when every 1 seconds": true} {
-		if got, ok := supported[desc]; !ok || got != want {
-			t.Errorf("%s: supported=%v (present %v), want %v", desc, got, ok, want)
-		}
 	}
 	e := NewEngine(h)
 	in := e.NewInstance(prog, 1)
@@ -802,7 +784,7 @@ when every 1 seconds
 	if strings.Join(h.logs, ",") != "before" {
 		t.Fatalf("logs %v", h.logs)
 	}
-	for _, expr := range []string{"print Hero.x", "print find(\"a\")", "print mouse.x", "print sin(1)", "var o = spawn \"S\" at 1, 2"} {
+	for _, expr := range []string{"print sin(1)", "print recall(\"a\", 0)", "remember \"a\" as 1", "restart scene", "stop music"} {
 		p, errs := CompileSource("t.tdsl", "when start\n  "+expr+"\n", nil)
 		_ = errs
 		if p == nil {

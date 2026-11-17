@@ -38,3 +38,14 @@ func Fit(winW, winH, viewW, viewH int, mode scene.ImageMode) Placement {
 	}
 	return p
 }
+
+// ToView converts a point of the window (device pixels) to view coordinates:
+// pixels of the game view with (0, 0) at its top-left corner. The point may lie
+// outside the view (on a letterbox bar), then the result is outside
+// [0, viewW) x [0, viewH).
+func (p Placement) ToView(winX, winY float64) (x, y float64) {
+	if p.Scale <= 0 {
+		return 0, 0
+	}
+	return float64(winX-p.X) / p.Scale, float64(winY-p.Y) / p.Scale
+}

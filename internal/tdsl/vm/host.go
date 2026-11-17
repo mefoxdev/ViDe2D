@@ -44,6 +44,13 @@ var propKind = [...]Kind{
 	PropLayer: KNum, PropTag: KText, PropName: KText, PropText: KText, PropFontSize: KNum,
 }
 
+// Starter is an optional part of a Host: it creates (and initializes) the
+// script instance of an object that has not run yet, so that another script
+// can read and write its variables at once.
+type Starter interface {
+	EnsureInstance(id ObjID)
+}
+
 // ErrGone is returned by a Host when the object no longer exists (TD303).
 var ErrGone = errors.New("object is gone")
 
@@ -75,7 +82,69 @@ type Host interface {
 	Log(text string)
 	// Key reports the state of the named key in the current step.
 	Key(name string, state tdsl.KeyState) bool
+
+	// World queries. Objects are axis-aligned boxes in world coordinates
+	// (an object without size is a point); results are in scene-tree order.
+	// "work" is the number of boxes examined: the VM charges it to the step
+	// budget (one step per four boxes), which keeps broad queries within limits.
+
+	// Find returns the first live object with the name.
+	Find(name string) (ObjID, bool)
+	// Exists reports whether the object is alive (a destroyed object stays alive
+	// until the end of its frame).
+	Exists(obj ObjID) bool
+	// All lists the live objects that carry the tag; it fails if there are more than limit.
+	All(tag string, limit int) (ids []ObjID, work int, err error)
+	// Count is the number of live objects that carry the tag.
+	Count(tag string) int
+	// Distance is the distance between the centers of two objects.
+	Distance(a, b ObjID) (float64, error)
+	// Touching reports whether self overlaps an object of the target; with
+	// useDir it asks whether something stands flush against self in direction dir.
+	Touching(self ObjID, t Target, dir Dir, useDir bool) (yes bool, work int, err error)
+	// Overlapping lists the objects of the target that overlap self, in scene
+	// order, appending to buf[:0].
+	Overlapping(self ObjID, t Target, buf []ObjID) (ids []ObjID, work int, err error)
+	// MoveAvoiding moves self by (dx, dy) but stops flush against the first
+	// object carrying tag.
+	MoveAvoiding(self ObjID, dx, dy float64, tag string) (work int, err error)
+	// Spawn creates a copy of the template at world position (x, y). The new
+	// object joins the world at the end of the frame. It returns the number of
+	// objects created, for the step budget.
+	Spawn(template string, x, y float64) (id ObjID, work int, err error)
+	// Mouse is the cursor position in world coordinates and whether the button is down.
+	Mouse() (x, y float64, held bool)
+	// Clicked reports whether the mouse button went down in this step over the object.
+	Clicked(self ObjID) bool
 }
+
+// Target says what a touch query is about: one object (HasObj) or all the
+// objects that carry Tag.
+type Target struct {
+	Tag    string
+	Obj    ObjID
+	HasObj bool
+}
+
+// NoWorld implements the world queries of Host for a host without a world:
+// nothing is found, nothing touches. Embed it in small test hosts.
+type NoWorld struct{}
+
+func (NoWorld) Find(string) (ObjID, bool)             { return 0, false }
+func (NoWorld) Exists(ObjID) bool                     { return false }
+func (NoWorld) All(string, int) ([]ObjID, int, error) { return nil, 0, nil }
+func (NoWorld) Count(string) int                      { return 0 }
+func (NoWorld) Distance(a, b ObjID) (float64, error)  { return 0, ErrGone }
+func (NoWorld) Touching(ObjID, Target, Dir, bool) (bool, int, error) {
+	return false, 0, nil
+}
+func (NoWorld) Overlapping(ObjID, Target, []ObjID) ([]ObjID, int, error)  { return nil, 0, nil }
+func (NoWorld) MoveAvoiding(ObjID, float64, float64, string) (int, error) { return 0, nil }
+func (NoWorld) Spawn(string, float64, float64) (ObjID, int, error) {
+	return 0, 0, &HostError{Code: CodeUnsupported, Message: "В этом мире нельзя создавать объекты."}
+}
+func (NoWorld) Mouse() (float64, float64, bool) { return 0, 0, false }
+func (NoWorld) Clicked(ObjID) bool              { return false }
 
 // Limits are the resource limits of docs/truedsl/safety.md.
 type Limits struct {
@@ -86,6 +155,9 @@ type Limits struct {
 	TextChars      int // characters in one text
 	PrintsPerFrame int // "print" messages per frame, whole game
 	PrintChars     int // characters kept from one "print" message
+	SendsPerFrame  int // "send" commands per frame, whole game
+	Backlog        int // messages waiting for delivery (sent but not yet delivered)
+	Objects        int // live objects made by "spawn"
 }
 
 // MaxCoord bounds the numbers a script may write into object properties and
@@ -94,5 +166,6 @@ const MaxCoord = 1e9
 
 // DefaultLimits returns the limits from safety.md.
 func DefaultLimits() Limits {
-	return Limits{FrameSteps: 200_000, HandlerSteps: 50_000, CallDepth: 64, ListItems: 100_000, TextChars: 10_000, PrintsPerFrame: 1000, PrintChars: 1000}
+	return Limits{FrameSteps: 200_000, HandlerSteps: 50_000, CallDepth: 64, ListItems: 100_000, TextChars: 10_000, PrintsPerFrame: 1000, PrintChars: 1000,
+		SendsPerFrame: 1000, Backlog: 5000, Objects: 5000}
 }

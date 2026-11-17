@@ -18,5 +18,5 @@ when key down held
 
 when touch "coin"
   destroy other
-  play sound "coin.wav"
   send "coin collected"
+  play sound "coin.wav"      # sounds are not supported by the engine yet: the handler stops here

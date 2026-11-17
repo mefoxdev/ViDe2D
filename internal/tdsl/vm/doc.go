@@ -34,6 +34,42 @@
 //     variable is a copy, assigning to it does not change the loop.
 //   - "repeat n times" runs floor(n) times.
 //
+// # The world
+//
+// The world is reached through Host: object properties, movement, and the
+// queries and actions of the stage with collisions (Find, All, Count,
+// Distance, Touching, Overlapping, MoveAvoiding, Spawn, Mouse, Clicked). The
+// geometry itself (boxes, touching rules, broadphase) belongs to the host;
+// the VM only fixes the contract:
+//
+//   - a frame runs the phases of Phase in order, then Engine.Deliver hands out
+//     the queued messages; the host applies spawns and destroys after that;
+//   - "when touch" / "when stop touching" keep, per instance and handler, the
+//     objects touched in the previous step and fire for the difference, in the
+//     order the host lists them (scene-tree order); an object that is gone
+//     does not produce "stop touching";
+//   - every world query reports the number of boxes it looked at, and the VM
+//     charges one step per four, so queries are paid for in proportion to
+//     their size;
+//   - messages are delivered in send order, each to every instance that has a
+//     matching "when message" in the order the runtime gives; messages sent
+//     during delivery are queued for the next frame; at most
+//     Limits.SendsPerFrame sends per frame and Limits.Backlog waiting;
+//   - "shared" variables live in the Engine, are created once by
+//     RegisterProgram (first declarer wins) and are looked up by name;
+//     a plain name that is not a variable of the script is read as shared
+//     first, then as the object of that name (nothing if there is none);
+//   - the variables of another object (Hero.hp) are read through the
+//     instances the Engine knows (Engine.InstanceOf); a host that removes an
+//     object must call Engine.Detach;
+//   - "use" is linked at compile time (CompileSourceLibs): only the "to"
+//     commands of the library are compiled into the program; errors inside
+//     them quote the library file.
+//
+// Still not implemented, each reported as TD499 when its line is reached:
+// wait and slide, sounds and music, go to scene, restart scene, remember and
+// recall, sin and cos.
+//
 // # Suspendable execution
 //
 // A handler run is a Task with its own value stack and its own heap-allocated

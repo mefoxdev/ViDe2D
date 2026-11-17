@@ -2,10 +2,7 @@ package runtime
 
 import (
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/vide2d/vide-studio/internal/project"
 	"github.com/vide2d/vide-studio/internal/projfs"
@@ -34,28 +31,7 @@ func NewSource(root string) *Source {
 
 // SafeFile resolves the project-relative path rel to a file below the root and
 // checks that it is a regular file reached without any symbolic link.
-func (s *Source) SafeFile(rel string) (string, error) {
-	file := projfs.Resolve(s.Root, rel)
-	if file == "" {
-		return "", fmt.Errorf("unsafe path %q", rel)
-	}
-	dir := s.Root
-	parts := strings.Split(rel, "/")
-	for i, p := range parts {
-		dir = filepath.Join(dir, p)
-		st, err := os.Lstat(dir)
-		if err != nil {
-			return "", fmt.Errorf("%s: %w", rel, unwrapPath(err))
-		}
-		if st.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("%s: symbolic links are not allowed", rel)
-		}
-		if i == len(parts)-1 && !st.Mode().IsRegular() {
-			return "", fmt.Errorf("%s: not a regular file", rel)
-		}
-	}
-	return file, nil
-}
+func (s *Source) SafeFile(rel string) (string, error) { return projfs.SafeFile(s.Root, rel) }
 
 func unwrapPath(err error) error {
 	if pe, ok := err.(*os.PathError); ok {
@@ -69,11 +45,7 @@ func (s *Source) Doc(rel string) (*scene.Scene, error) {
 	if sc, ok := s.docs[rel]; ok {
 		return sc, nil
 	}
-	file, err := s.SafeFile(rel)
-	if err != nil {
-		return nil, err
-	}
-	sc, err := readDoc(file)
+	sc, err := s.readDoc(rel)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", rel, err)
 	}
@@ -81,18 +53,15 @@ func (s *Source) Doc(rel string) (*scene.Scene, error) {
 	return sc, nil
 }
 
-func readDoc(file string) (*scene.Scene, error) {
-	f, err := os.Open(file)
-	if err != nil {
-		return nil, unwrapPath(err)
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, MaxDocBytes+1))
+// readDoc checks and reads the file in one step (no gap for a link swap).
+func (s *Source) readDoc(rel string) (*scene.Scene, error) {
+	data, err := projfs.ReadFile(s.Root, rel, MaxDocBytes)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > MaxDocBytes {
-		return nil, fmt.Errorf("file is larger than %d bytes", MaxDocBytes)
-	}
 	return project.Unmarshal(data)
 }
+
+// OpenFile opens the project file rel for reading with the same rules as
+// SafeFile, checking and opening in one step.
+func (s *Source) OpenFile(rel string) (*os.File, error) { return projfs.OpenFile(s.Root, rel) }

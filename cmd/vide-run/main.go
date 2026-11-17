@@ -12,11 +12,12 @@ import (
 	"os"
 	"time"
 
+	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/runtime"
 )
 
 func main() {
-	root := flag.String("root", "", "project folder (default: derived from the scene file)")
+	root := flag.String("root", "", "project root; must contain the scene file (default: the scene file's folder)")
 	seed := flag.Uint64("seed", 0, "random seed for scripts, 0 is a valid seed (default: taken from the clock and printed, so a game can be replayed)")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: vide-run [-root dir] [-seed n] <project.vide.json | scene file>")
@@ -27,6 +28,15 @@ func main() {
 	if flag.NArg() != 1 {
 		flag.Usage()
 		os.Exit(2)
+	}
+	if *root == "" {
+		// Without -root the scene's folder is the root. For a scene inside
+		// game/scenes that would silently give a project without its objects:
+		// refuse with a clear message instead.
+		if msg := projfs.NestedHint(flag.Arg(0)); msg != "" {
+			fmt.Fprintln(os.Stderr, "vide-run:", msg)
+			os.Exit(2)
+		}
 	}
 	seedGiven := false
 	flag.Visit(func(f *flag.Flag) { seedGiven = seedGiven || f.Name == "seed" })

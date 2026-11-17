@@ -314,18 +314,21 @@ func TestDemoProjectScriptsRun(t *testing.T) {
 	if !hero.Flip {
 		t.Fatal("flip not set")
 	}
-	if score.Text != "Coins: 0 of 1" {
+	// The hero walked over the coin: it is gone, the message arrived, the score counted it.
+	if find(w, "coin") != nil {
+		t.Fatal("coin was not collected")
+	}
+	if score.Text != "Coins: 1 of 1" {
 		t.Fatalf("score text %q", score.Text)
 	}
-	// unsupported features are announced once, as warnings, and never crash
+	// "play" is the only thing the engine cannot do yet: it stops that handler
+	// run (after "send") with TD499, once; nothing else is reported.
 	all := sink.all()
-	for _, want := range []string{"Предупреждение:", "touch", "message", "shared"} {
-		if !strings.Contains(all, want) {
-			t.Errorf("log lacks %q:\n%s", want, all)
-		}
+	if sink.count("TD499") != 1 || sink.count("Предупреждение:") != 1 || !strings.Contains(all, "play") { // the warning at load and the error at run time
+		t.Errorf("log:\n%s", all)
 	}
-	if strings.Contains(all, "Во время игры") {
-		t.Errorf("unexpected runtime error:\n%s", all)
+	if sink.count("Во время игры") != 1 {
+		t.Errorf("unexpected runtime errors:\n%s", all)
 	}
 }
 

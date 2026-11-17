@@ -72,3 +72,20 @@ func TestSymlinkSkipped(t *testing.T) {
 		t.Fatal("symlink decoded")
 	}
 }
+
+func TestDecodeRefusesLinks(t *testing.T) {
+	root, out := t.TempDir(), t.TempDir()
+	writePNG(t, filepath.Join(root, "a.png"), 2, 2)
+	writePNG(t, filepath.Join(out, "o.png"), 2, 2)
+	if _, err := Decode(root, "a.png"); err != nil {
+		t.Fatal(err)
+	}
+	if os.Symlink(out, filepath.Join(root, "lnk")) != nil || os.Symlink(filepath.Join(root, "a.png"), filepath.Join(root, "b.png")) != nil {
+		t.Skip("no symlinks")
+	}
+	for _, rel := range []string{"lnk/o.png", "b.png", "none.png"} {
+		if _, err := Decode(root, rel); err == nil {
+			t.Errorf("%s accepted", rel)
+		}
+	}
+}

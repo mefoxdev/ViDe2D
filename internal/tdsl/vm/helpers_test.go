@@ -9,6 +9,7 @@ import (
 
 // fakeHost is a one-object world for tests.
 type fakeHost struct {
+	NoWorld
 	rate      int
 	seed      uint64
 	props     map[Prop]Value
@@ -52,6 +53,7 @@ func (h *fakeHost) MoveTo(_ ObjID, x, y float64) error {
 	h.props[PropX], h.props[PropY] = Num(x), Num(y)
 	return nil
 }
+func (h *fakeHost) Exists(ObjID) bool      { return !h.gone }
 func (h *fakeHost) Destroy(id ObjID) error { h.destroyed = append(h.destroyed, id); return nil }
 func (h *fakeHost) Log(s string)           { h.logs = append(h.logs, s) }
 func (h *fakeHost) Key(name string, st tdsl.KeyState) bool {
@@ -87,9 +89,10 @@ func setup(t testing.TB, src string, h *fakeHost) (*Engine, *Instance) {
 func step(e *Engine, in *Instance) []*Error {
 	e.BeginFrame()
 	var errs []*Error
-	for _, ph := range []Phase{PhaseStart, PhaseInput, PhaseUpdate, PhaseTimers} {
+	for _, ph := range []Phase{PhaseInit, PhaseStart, PhaseInput, PhaseUpdate, PhaseTimers, PhaseTouches} {
 		errs = append(errs, in.RunPhase(ph)...)
 	}
+	errs = append(errs, e.Deliver([]*Instance{in})...)
 	return errs
 }
 

@@ -15,15 +15,18 @@ type Behavior interface {
 }
 
 // Phase is one part of the frame order of reference.md section 8, in the
-// order the phases run. Touches and messages will follow Timers.
+// order the phases run. Messages follow Touches: they are delivered after the
+// last phase, in send order (World.Step).
 type Phase int
 
 // Phases of a simulation step.
 const (
-	PhaseStart  Phase = iota // "when start" of objects that have just appeared
-	PhaseInput               // "when key ..."
-	PhaseUpdate              // "when update"
-	PhaseTimers              // "when every ..."
+	PhaseInit    Phase = iota // variables of objects that have just appeared get their values
+	PhaseStart                // "when start" of objects that have just appeared
+	PhaseInput                // "when key ...", "when click"
+	PhaseUpdate               // "when update"
+	PhaseTimers               // "when every ..."
+	PhaseTouches              // "when touch ...", "when stop touching ..."
 )
 
 // Stateful is a Behavior whose state survives the unloading of its chunk:
@@ -73,9 +76,20 @@ type Entity struct {
 	Dead bool
 
 	pendingDestroy bool
-	fresh          bool       // created and not yet through its first step
-	key            string     // stable identity of the map node inside its chunk ("" outside chunks)
-	chunk          *chunkUnit // the chunk the entity belongs to, nil for scene and static map content
+	spawned        bool // made by "spawn": counts against the limit of live spawned objects
+	// collision index (collide.go)
+	bb                 box
+	bbOK               bool
+	bbTick             uint64
+	gListed            bool // in collider.grid
+	pending            bool // made by "spawn" in this step, not in the world yet
+	ord                int
+	qstamp             uint64
+	gIn, gDirty, gBig  bool
+	gx0, gy0, gx1, gy1 int
+	fresh              bool       // created and not yet through its first step
+	key                string     // stable identity of the map node inside its chunk ("" outside chunks)
+	chunk              *chunkUnit // the chunk the entity belongs to, nil for scene and static map content
 }
 
 // HasTag reports whether the entity carries tag.

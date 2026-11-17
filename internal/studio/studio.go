@@ -110,11 +110,14 @@ func New(path string) *Studio {
 	s.tex = newTextures(s.proj.dir)
 	loaded := false
 	if path != "" {
-		sc, err := project.Load(path)
+		sc, err := s.loadMain(path)
 		switch {
 		case err == nil:
 			s.scene, loaded = sc, true
 			s.Logf("Opened %s", path)
+			if msg := s.nestedProblem(); msg != "" {
+				s.Logf("Warning: %s", msg)
+			}
 		case errors.Is(err, os.ErrNotExist):
 			s.Logf("New project: %s (Ctrl+S to save)", path)
 		default:
@@ -168,8 +171,19 @@ func (s *Studio) save() {
 	}
 }
 
+// loadMain loads the document the studio was given: through the project
+// folder (links refused, size limited like the runtime's). A missing file
+// reports os.ErrNotExist.
+func (s *Studio) loadMain(file string) (*scene.Scene, error) {
+	rel, err := projfs.RelTo(s.proj.dir, file)
+	if err != nil {
+		return nil, err
+	}
+	return s.loadDoc(rel)
+}
+
 func (s *Studio) revert() {
-	sc, err := project.Load(s.path)
+	sc, err := s.loadMain(s.path)
 	if err != nil {
 		s.Logf("Revert failed: %v", err)
 		return

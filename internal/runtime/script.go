@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/scene"
 	"github.com/vide2d/vide-studio/internal/tdsl"
 	"github.com/vide2d/vide-studio/internal/tdsl/vm"
@@ -27,6 +28,10 @@ type scriptRuntime struct {
 	progs map[string]*vm.Program // by script path; nil value = the script failed to compile
 	seen  map[string]int         // runtime errors by place, to keep the log readable
 	names []string               // object names for the checker, refreshed per compile
+
+	ready    bool                // the project's scripts have been compiled
+	shared   map[string][]string // "shared" names declared in the project's scripts -> files
+	sharedOK bool
 }
 
 func newScriptRuntime(w *World) *scriptRuntime {
@@ -35,7 +40,85 @@ func newScriptRuntime(w *World) *scriptRuntime {
 	return s
 }
 
-func (s *scriptRuntime) beginFrame() { s.eng.BeginFrame() }
+func (s *scriptRuntime) beginFrame() {
+	s.eng.BeginFrame()
+	if !s.ready {
+		s.ready = true
+		s.prepareAll()
+	}
+}
+
+// prepareAll compiles every script the scene can ever use (loaded or not, in
+// the order of the scene tree) before the first step. That is what makes
+// "shared" variables exist for every script from the start, whichever script
+// runs first, and puts all the problems of the scripts into the log at once.
+func (s *scriptRuntime) prepareAll() {
+	seen := map[string]bool{}
+	for _, n := range s.w.allNodes() {
+		if n.Script != "" && !seen[n.Script] {
+			seen[n.Script] = true
+			s.program(n.Script)
+		}
+	}
+	// A script that is attached to nothing may still declare a "shared"
+	// variable the others use (the checker accepts that): compile it too.
+	if !s.sharedOK {
+		s.sharedOK = true
+		s.scanShared()
+	}
+	var files []string
+	for _, fs := range s.shared {
+		files = append(files, fs...)
+	}
+	sort.Strings(files)
+	for _, f := range files {
+		if !seen[f] {
+			seen[f] = true
+			s.program(f)
+		}
+	}
+	// A name that the checker accepted but no working script created would
+	// silently read as "nothing": say so.
+	names := make([]string, 0, len(s.shared))
+	for n := range s.shared {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if _, ok := s.eng.Shared(n); !ok {
+			s.w.logf("Общей переменной «%s» нет: её объявляет %s, но с этим скриптом беда (ошибка выше). Скрипты, которые её используют, увидят «nothing».",
+				n, strings.Join(s.shared[n], ", "))
+		}
+	}
+}
+
+// deliverMessages hands the messages sent in this step to the objects that
+// listen to them.
+func (s *scriptRuntime) deliverMessages() {
+	if s.eng.Pending() == 0 {
+		return
+	}
+	var order []*vm.Instance
+	s.w.Each(func(e *Entity) {
+		if b, ok := e.Behavior.(*scriptBehavior); ok && b.inst != nil && b.inst.HasMessages() {
+			order = append(order, b.inst)
+		}
+	})
+	s.report(s.eng.Deliver(order))
+}
+
+// initSpawned prepares the scripts of objects that "spawn" has just made, so
+// that their variables can be used at once.
+func (s *scriptRuntime) initSpawned(ents []*Entity) {
+	for _, e := range ents {
+		if b, ok := e.Behavior.(*scriptBehavior); ok {
+			b.ensure(e)
+			if b.inst != nil {
+				s.report(b.inst.Initialize())
+			}
+		}
+	}
+}
 
 // endFrame reports handlers that were skipped because the frame ran out of steps.
 func (s *scriptRuntime) endFrame() {
@@ -124,25 +207,30 @@ func (s *scriptRuntime) program(rel string) *vm.Program {
 	return p
 }
 
+// readScript reads a script of the project through the checked path rules.
+func (s *scriptRuntime) readScript(rel string) (string, error) {
+	f, err := s.w.src.OpenFile(rel)
+	if err != nil {
+		return "", unwrapPath(err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxScriptBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("файл не читается")
+	}
+	if len(data) > maxScriptBytes {
+		return "", fmt.Errorf("файл больше %d байт", maxScriptBytes)
+	}
+	return string(data), nil
+}
+
 func (s *scriptRuntime) compile(rel string) *vm.Program {
-	file, err := s.w.src.SafeFile(rel)
+	src, err := s.readScript(rel)
 	if err != nil {
 		s.w.logf("Скрипт %s не запущен: %v. Игра идёт без него.", rel, err)
 		return nil
 	}
-	f, err := os.Open(file)
-	if err != nil {
-		s.w.logf("Скрипт %s не запущен: %v. Игра идёт без него.", rel, unwrapPath(err))
-		return nil
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxScriptBytes+1))
-	if err != nil || len(data) > maxScriptBytes {
-		s.w.logf("Скрипт %s не запущен: файл не читается или больше %d байт. Игра идёт без него.", rel, maxScriptBytes)
-		return nil
-	}
-	src := string(data)
-	prog, errs := vm.CompileSource(rel, src, &tdsl.Env{Objects: s.objectNames()})
+	prog, errs := vm.CompileSourceLibs(rel, src, s.env(rel), s.loadLib)
 	if len(errs) > 0 {
 		var b strings.Builder
 		fmt.Fprintf(&b, "Скрипт %s не запущен: в нём %d %s. Игра идёт без него.\n", rel, len(errs), plural(len(errs), "ошибка", "ошибки", "ошибок"))
@@ -161,7 +249,85 @@ func (s *scriptRuntime) compile(rel string) *vm.Program {
 	for _, msg := range prog.Warnings {
 		s.w.logMsg("Предупреждение: " + msg)
 	}
+	s.report(s.eng.RegisterProgram(prog))
 	return prog
+}
+
+// loadLib reads a script named in a "use" line: a bare file name lives in the
+// scripts folder, a path is taken from the project folder, like images.
+func (s *scriptRuntime) loadLib(path string) (string, string, error) {
+	rel := path
+	if !strings.Contains(path, "/") {
+		rel = "scripts/" + path
+	}
+	if !strings.HasSuffix(rel, ".tdsl") {
+		return "", "", fmt.Errorf("это не скрипт (нужен файл .tdsl)")
+	}
+	src, err := s.readScript(rel)
+	if err != nil {
+		return "", "", fmt.Errorf("нет такого файла в проекте (%s)", rel)
+	}
+	return rel, src, nil
+}
+
+// env is what the checker knows about the project when it checks script rel.
+func (s *scriptRuntime) env(rel string) *tdsl.Env {
+	if !s.sharedOK {
+		s.sharedOK = true
+		s.scanShared()
+	}
+	env := &tdsl.Env{Objects: s.objectNames(), Templates: s.templateNames(), SharedDeclared: map[string]string{}}
+	for name, files := range s.shared {
+		for _, f := range files {
+			if f != rel {
+				env.SharedDeclared[name] = f
+				break
+			}
+		}
+	}
+	return env
+}
+
+// maxScanScripts bounds how many scripts are read to find "shared" names.
+const maxScanScripts = 500
+
+// scanShared finds the "shared" variables declared by the scripts of the project.
+func (s *scriptRuntime) scanShared() {
+	s.shared = map[string][]string{}
+	top, _ := projfs.Scan(s.w.src.Root)
+	files := projfs.Files(top, projfs.KindCode)
+	if len(files) > maxScanScripts {
+		s.w.logf("В проекте больше %d скриптов: «shared»-переменные ищутся только в первых %d файлах, остальные могут не найтись.", maxScanScripts, maxScanScripts)
+	}
+	for i, f := range files {
+		if i >= maxScanScripts {
+			break
+		}
+		src, err := s.readScript(f.Path)
+		if err != nil {
+			continue
+		}
+		sc, _ := tdsl.Parse(src)
+		if sc == nil {
+			continue
+		}
+		for _, it := range sc.Items {
+			if d, ok := it.(*tdsl.SharedDecl); ok {
+				s.shared[d.Name] = append(s.shared[d.Name], f.Path)
+			}
+		}
+	}
+}
+
+// templateNames lists the names of the templates of the project, sorted.
+func (s *scriptRuntime) templateNames() []string {
+	reg := s.w.templateRegistry()
+	out := make([]string, 0, len(reg))
+	for n := range reg {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // objectNames lists the names of every object the scene can ever contain:
@@ -172,33 +338,13 @@ func (s *scriptRuntime) objectNames() []string {
 	if s.names != nil {
 		return s.names
 	}
-	w := s.w
 	seen := map[string]bool{}
 	names := []string{}
-	refs := map[string]bool{}
-	var walk func(n *scene.Node)
-	walk = func(n *scene.Node) {
+	for _, n := range s.w.allNodes() {
 		if !seen[n.Name] && n.Kind != scene.KindChunk {
 			seen[n.Name] = true
 			names = append(names, n.Name)
 		}
-		for _, c := range n.Children {
-			walk(c)
-		}
-		if n.Kind == scene.KindInstance && !refs[n.Ref] {
-			refs[n.Ref] = true
-			if doc, err := w.src.Doc(n.Ref); err == nil && doc.Type == scene.DocObject {
-				for _, c := range doc.Root.Children {
-					walk(c)
-				}
-			}
-		}
-	}
-	if w.scene != nil {
-		walk(w.scene.Root)
-	}
-	if w.mapDoc != nil {
-		walk(w.mapDoc.Root)
 	}
 	sort.Strings(names)
 	s.names = names
@@ -248,31 +394,41 @@ func (b *scriptBehavior) Step(*World, *Entity) {}
 
 // RunPhase runs the handlers of the phase.
 func (b *scriptBehavior) RunPhase(_ *World, e *Entity, p Phase) {
-	if !b.prepared {
-		b.prepared = true
-		if prog := b.rt.program(e.Script); prog != nil {
-			b.inst = b.rt.eng.NewInstance(prog, vm.ObjID(e.ID))
-			if b.pending != nil {
-				b.inst.Restore(b.pending)
-				b.pending = nil
-			}
-		}
-	}
+	b.ensure(e)
 	if b.inst == nil {
 		return
 	}
 	var ph vm.Phase
 	switch p {
+	case PhaseInit:
+		ph = vm.PhaseInit
 	case PhaseStart:
 		ph = vm.PhaseStart
 	case PhaseInput:
 		ph = vm.PhaseInput
 	case PhaseUpdate:
 		ph = vm.PhaseUpdate
-	default:
+	case PhaseTimers:
 		ph = vm.PhaseTimers
+	default:
+		ph = vm.PhaseTouches
 	}
 	b.rt.report(b.inst.RunPhase(ph))
+}
+
+// ensure creates the instance of the script on first use.
+func (b *scriptBehavior) ensure(e *Entity) {
+	if b.prepared {
+		return
+	}
+	b.prepared = true
+	if prog := b.rt.program(e.Script); prog != nil {
+		b.inst = b.rt.eng.NewInstance(prog, vm.ObjID(e.ID))
+		if b.pending != nil {
+			b.inst.Restore(b.pending)
+			b.pending = nil
+		}
+	}
 }
 
 // ---- the host the VM talks to ----
@@ -425,8 +581,10 @@ func (h *scriptHost) SetProp(id vm.ObjID, p vm.Prop, v vm.Value) error {
 		h.w.Place(e, wx, wy, false)
 	case vm.PropWidth:
 		e.W = v.N
+		h.w.geoChanged(e, false)
 	case vm.PropHeight:
 		e.H = v.N
+		h.w.geoChanged(e, false)
 	case vm.PropAngle:
 		e.Angle = v.N
 	case vm.PropVisible:
@@ -440,10 +598,11 @@ func (h *scriptHost) SetProp(id vm.ObjID, p vm.Prop, v vm.Value) error {
 	case vm.PropFontSize:
 		e.FontSize = clampInt(v.N)
 	case vm.PropTag:
-		e.Tags = nil
+		var tags []string
 		if v.S != "" {
-			e.Tags = []string{v.S}
+			tags = []string{v.S}
 		}
+		h.w.retag(e, tags)
 	case vm.PropTint:
 		c, ok := parseColor(v.S)
 		if !ok {
