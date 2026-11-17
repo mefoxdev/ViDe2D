@@ -133,7 +133,79 @@ func TestUpgradeFromVersion1(t *testing.T) {
 		t.Fatalf("not upgraded: %+v root=%q", h, s.Root.Script)
 	}
 	out, _ := Marshal(s)
-	if !strings.Contains(string(out), `"version": 2`) {
-		t.Fatalf("not written as v2: %s", out)
+	if !strings.Contains(string(out), `"version": 3`) {
+		t.Fatalf("not written as v3: %s", out)
+	}
+}
+
+func TestDocTypesRoundTrip(t *testing.T) {
+	// object with an instance of another object
+	o := scene.New("Coin")
+	o.Type = scene.DocObject
+	inst := o.Add(nil, scene.KindInstance, "Glow")
+	inst.Ref = "game/objects/glow.vide.json"
+	data, err := Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Unmarshal(data)
+	if err != nil || back.Type != scene.DocObject || back.Root.Children[0].Ref != "game/objects/glow.vide.json" {
+		t.Fatalf("object: %v %+v", err, back)
+	}
+
+	// map with two chunks and a sprite inside one
+	m := scene.New("World")
+	m.Type = scene.DocMap
+	c := m.Add(nil, scene.KindChunk, "c1")
+	c.CX, c.CY = 2, -1
+	c.X, c.Y = m.ChunkOrigin(c)
+	sp := m.Add(c, scene.KindSprite, "Tree")
+	sp.X, sp.Y = 10, 10
+	data, _ = Marshal(m)
+	back, err = Unmarshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := back.Root.Children[0]
+	if ch.CX != 2 || ch.CY != -1 || ch.X != 2*64*16 || ch.W != 64*16 {
+		t.Fatalf("chunk: %+v", ch)
+	}
+
+	// scene with a map
+	sc := scene.New("Level")
+	sc.Map = "game/maps/world.vide.json"
+	data, _ = Marshal(sc)
+	back, err = Unmarshal(data)
+	if err != nil || back.Map != sc.Map || back.Type != scene.DocScene {
+		t.Fatalf("scene: %v %+v", err, back)
+	}
+}
+
+func TestDocTypeRules(t *testing.T) {
+	bad := map[string]string{
+		"unknown type":     `{"version":3,"type":"level","scene":{"name":"M","kind":"Node"}}`,
+		"object with map":  `{"version":3,"type":"object","map":"game/maps/w.vide.json","scene":{"name":"M","kind":"Node"}}`,
+		"map path":         `{"version":3,"type":"scene","map":"../w.vide.json","scene":{"name":"M","kind":"Node"}}`,
+		"map wrong folder": `{"version":3,"type":"scene","map":"game/objects/w.vide.json","scene":{"name":"M","kind":"Node"}}`,
+		"tile size":        `{"version":3,"tile_size":999,"scene":{"name":"M","kind":"Node"}}`,
+		"instance ref":     `{"version":3,"scene":{"name":"M","kind":"Node","children":[{"name":"I","kind":"Instance","ref":"game/scenes/s.vide.json"}]}}`,
+		"instance up":      `{"version":3,"scene":{"name":"M","kind":"Node","children":[{"name":"I","kind":"Instance","ref":"game/objects/../x.vide.json"}]}}`,
+		"instance kids":    `{"version":3,"scene":{"name":"M","kind":"Node","children":[{"name":"I","kind":"Instance","ref":"game/objects/o.vide.json","children":[{"name":"x","kind":"Node"}]}]}}`,
+		"chunk in scene":   `{"version":3,"scene":{"name":"M","kind":"Node","children":[{"name":"c","kind":"Chunk","chunk":[0,0]}]}}`,
+		"map needs chunks": `{"version":3,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"n","kind":"Node"}]}}`,
+		"duplicate chunks": `{"version":3,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"a","kind":"Chunk","chunk":[1,1]},{"name":"b","kind":"Chunk","chunk":[1,1]}]}}`,
+		"chunk coords":     `{"version":3,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"a","kind":"Chunk","chunk":[99999,0]}]}}`,
+		"chunk no coords":  `{"version":3,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"a","kind":"Chunk"}]}}`,
+		"chunk overflow":   `{"version":3,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"a","kind":"Chunk","chunk":[0,0],"children":[{"name":"S","kind":"Sprite","x":1020,"y":0,"w":16,"h":16}]}]}}`,
+		"chunk negative":   `{"version":3,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"a","kind":"Chunk","chunk":[0,0],"children":[{"name":"S","kind":"Sprite","x":-1,"y":0,"w":16,"h":16}]}]}}`,
+	}
+	for name, in := range bad {
+		if _, err := Unmarshal([]byte(in)); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+	good := `{"version":3,"type":"map","scene":{"name":"M","kind":"Node","children":[{"name":"a","kind":"Chunk","chunk":[0,0],"children":[{"name":"S","kind":"Sprite","x":1008,"y":1008,"w":16,"h":16}]}]}}`
+	if _, err := Unmarshal([]byte(good)); err != nil {
+		t.Fatalf("sprite exactly filling the chunk corner must be accepted: %v", err)
 	}
 }

@@ -19,6 +19,7 @@ func main() {
 	ebiten.SetWindowTitle("ViDe-studio")
 	ebiten.SetWindowSize(1280, 760)
 	ebiten.SetWindowSizeLimits(1100, 560, -1, -1)
+	ebiten.SetWindowClosingHandled(true) // the studio asks before discarding unsaved changes
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	if err := ebiten.RunGame(studio.New(path)); err != nil {
 		log.Fatal(err)

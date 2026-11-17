@@ -1,40 +1,10 @@
 {
-  "version": 2,
+  "version": 3,
   "image_mode": "pixel",
   "scene": {
     "name": "Demo",
     "kind": "Node",
     "children": [
-      {
-        "name": "grass",
-        "kind": "Sprite",
-        "x": 40,
-        "y": 120,
-        "w": 16,
-        "h": 16,
-        "color": "#5cc96b",
-        "texture": "assets/tiles/grass.png"
-      },
-      {
-        "name": "grass2",
-        "kind": "Sprite",
-        "x": 56,
-        "y": 120,
-        "w": 16,
-        "h": 16,
-        "color": "#5cc96b",
-        "texture": "assets/tiles/grass.png"
-      },
-      {
-        "name": "tree",
-        "kind": "Sprite",
-        "x": 200,
-        "y": 96,
-        "w": 16,
-        "h": 20,
-        "color": "#5cc96b",
-        "texture": "assets/tree.png"
-      },
       {
         "name": "hero",
         "kind": "Sprite",
@@ -81,7 +51,16 @@
         "texture": "assets/coin.png",
         "tag": "danger",
         "template": true
+      },
+      {
+        "name": "Bonus",
+        "kind": "Instance",
+        "x": 150,
+        "y": 30,
+        "ref": "game/objects/pair.vide.json"
       }
     ]
-  }
+  },
+  "type": "scene",
+  "map": "game/maps/world.vide.json"
 }

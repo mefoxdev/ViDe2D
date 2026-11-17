@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "type": "object",
+  "image_mode": "pixel",
+  "scene": {
+    "name": "Coin",
+    "kind": "Node",
+    "children": [
+      {
+        "name": "Body",
+        "kind": "Sprite",
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8,
+        "color": "#f0dc4a",
+        "texture": "assets/coin.png",
+        "tag": "coin"
+      }
+    ]
+  }
+}

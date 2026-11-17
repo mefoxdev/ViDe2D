@@ -16,14 +16,24 @@ type Kind int
 const (
 	KindOther Kind = iota // a file the game cannot use
 	KindDir
-	KindCode  // TrueDSL script (.tdsl)
-	KindImage // .png
-	KindSound // .wav .ogg .mp3
-	KindScene // .vide.json
+	KindCode   // TrueDSL script (.tdsl)
+	KindImage  // .png
+	KindSound  // .wav .ogg .mp3
+	KindScene  // .vide.json (a scene: the finished product)
+	KindObject // .vide.json under game/objects/ (building block, importable)
+	KindMap    // .vide.json under game/maps/ (map made of chunks)
+)
+
+// Standard folders inside a project for game documents.
+const (
+	ObjectsDir = "game/objects"
+	ScenesDir  = "game/scenes"
+	MapsDir    = "game/maps"
+	DocExt     = ".vide.json"
 )
 
 func (k Kind) String() string {
-	return [...]string{"file", "folder", "code", "image", "sound", "scene"}[k]
+	return [...]string{"file", "folder", "code", "image", "sound", "scene", "object", "map"}[k]
 }
 
 // Usable reports whether the game can use files of this kind.
@@ -45,11 +55,11 @@ type Entry struct {
 	Children []*Entry
 }
 
-// Classify returns the kind of a regular file by its name.
+// Classify returns the kind of a regular file by its name alone; every
+// ".vide.json" counts as a scene. Use ClassifyPath when the folder is known.
 func Classify(name string) Kind {
 	lower := strings.ToLower(name)
-	switch {
-	case strings.HasSuffix(lower, ".vide.json"):
+	if strings.HasSuffix(lower, DocExt) {
 		return KindScene
 	}
 	switch path.Ext(lower) {
@@ -61,6 +71,22 @@ func Classify(name string) Kind {
 		return KindSound
 	}
 	return KindOther
+}
+
+// ClassifyPath classifies a file by its project-relative path: documents under
+// game/objects are objects, under game/maps are maps, other ".vide.json" files
+// are scenes.
+func ClassifyPath(rel string) Kind {
+	k := Classify(path.Base(rel))
+	if k == KindScene {
+		switch {
+		case strings.HasPrefix(rel, ObjectsDir+"/"):
+			return KindObject
+		case strings.HasPrefix(rel, MapsDir+"/"):
+			return KindMap
+		}
+	}
+	return k
 }
 
 // Scan lists root's contents as a tree. Hidden entries (names starting with
@@ -99,7 +125,7 @@ func Scan(root string) (top []*Entry, truncated bool) {
 					e.Children = walk(filepath.Join(dir, name), e.Path, depth+1)
 				}
 			case de.Type().IsRegular():
-				e.Kind = Classify(name)
+				e.Kind = ClassifyPath(e.Path)
 				if info, err := de.Info(); err == nil {
 					e.Size = info.Size()
 				}

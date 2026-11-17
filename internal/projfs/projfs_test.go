@@ -110,3 +110,21 @@ func TestValidRelAndResolve(t *testing.T) {
 		t.Fatal("Resolve wrong")
 	}
 }
+
+func TestClassifyPath(t *testing.T) {
+	cases := map[string]Kind{
+		"game/objects/coin.vide.json":     KindObject,
+		"game/objects/sub/coin.vide.json": KindObject,
+		"game/maps/world.vide.json":       KindMap,
+		"game/scenes/main.vide.json":      KindScene,
+		"project.vide.json":               KindScene,
+		"other/objects/x.vide.json":       KindScene,
+		"game/objects/readme.txt":         KindOther,
+		"game/objects/a.png":              KindImage,
+	}
+	for p, want := range cases {
+		if got := ClassifyPath(p); got != want {
+			t.Errorf("%s: got %v want %v", p, got, want)
+		}
+	}
+}

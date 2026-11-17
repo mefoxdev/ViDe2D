@@ -14,6 +14,10 @@ const fieldPad = 6
 // Focused reports whether a text field currently captures the keyboard.
 func (c *Context) Focused() bool { return c.focus != "" || c.External }
 
+// FocusField gives keyboard focus to the text field with the given id on the
+// next frame, starting with value in its edit buffer.
+func (c *Context) FocusField(id, value string) { c.nextFocus, c.nextBuf = id, value }
+
 // KeyRepeat reports a key press with auto-repeat (in ticks).
 func KeyRepeat(k ebiten.Key) bool { return repeat(k) }
 

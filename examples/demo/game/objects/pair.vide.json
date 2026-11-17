@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "type": "object",
+  "image_mode": "pixel",
+  "scene": {
+    "name": "Pair",
+    "kind": "Node",
+    "children": [
+      {
+        "name": "Left",
+        "kind": "Instance",
+        "x": 0,
+        "y": 0,
+        "ref": "game/objects/coin.vide.json"
+      },
+      {
+        "name": "Right",
+        "kind": "Instance",
+        "x": 24,
+        "y": 0,
+        "ref": "game/objects/coin.vide.json"
+      }
+    ]
+  }
+}

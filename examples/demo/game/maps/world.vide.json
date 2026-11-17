@@ -1,0 +1,132 @@
+{
+  "version": 3,
+  "type": "map",
+  "image_mode": "pixel",
+  "scene": {
+    "name": "World",
+    "kind": "Node",
+    "children": [
+      {
+        "name": "Chunk 0,0",
+        "kind": "Chunk",
+        "x": 0,
+        "y": 0,
+        "chunk": [
+          0,
+          0
+        ],
+        "children": [
+          {
+            "name": "grass0",
+            "kind": "Sprite",
+            "x": 0,
+            "y": 160,
+            "w": 16,
+            "h": 16,
+            "color": "#5cc96b",
+            "texture": "assets/tiles/grass.png"
+          },
+          {
+            "name": "grass1",
+            "kind": "Sprite",
+            "x": 16,
+            "y": 160,
+            "w": 16,
+            "h": 16,
+            "color": "#5cc96b",
+            "texture": "assets/tiles/grass.png"
+          },
+          {
+            "name": "grass2",
+            "kind": "Sprite",
+            "x": 32,
+            "y": 160,
+            "w": 16,
+            "h": 16,
+            "color": "#5cc96b",
+            "texture": "assets/tiles/grass.png"
+          },
+          {
+            "name": "grass3",
+            "kind": "Sprite",
+            "x": 48,
+            "y": 160,
+            "w": 16,
+            "h": 16,
+            "color": "#5cc96b",
+            "texture": "assets/tiles/grass.png"
+          },
+          {
+            "name": "grass4",
+            "kind": "Sprite",
+            "x": 64,
+            "y": 160,
+            "w": 16,
+            "h": 16,
+            "color": "#5cc96b",
+            "texture": "assets/tiles/grass.png"
+          },
+          {
+            "name": "grass5",
+            "kind": "Sprite",
+            "x": 80,
+            "y": 160,
+            "w": 16,
+            "h": 16,
+            "color": "#5cc96b",
+            "texture": "assets/tiles/grass.png"
+          },
+          {
+            "name": "grass6",
+            "kind": "Sprite",
+            "x": 96,
+            "y": 160,
+            "w": 16,
+            "h": 16,
+            "color": "#5cc96b",
+            "texture": "assets/tiles/grass.png"
+          },
+          {
+            "name": "grass7",
+            "kind": "Sprite",
+            "x": 112,
+            "y": 160,
+            "w": 16,
+            "h": 16,
+            "color": "#5cc96b",
+            "texture": "assets/tiles/grass.png"
+          },
+          {
+            "name": "Tree",
+            "kind": "Instance",
+            "x": 60,
+            "y": 132,
+            "ref": "game/objects/coin.vide.json"
+          }
+        ]
+      },
+      {
+        "name": "Chunk 1,0",
+        "kind": "Chunk",
+        "x": 1024,
+        "y": 0,
+        "chunk": [
+          1,
+          0
+        ],
+        "children": [
+          {
+            "name": "tree",
+            "kind": "Sprite",
+            "x": 40,
+            "y": 120,
+            "w": 16,
+            "h": 20,
+            "color": "#5cc96b",
+            "texture": "assets/tree.png"
+          }
+        ]
+      }
+    ]
+  }
+}

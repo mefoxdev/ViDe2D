@@ -40,6 +40,10 @@ func kindColor(k projfs.Kind) color.RGBA {
 		return colSound
 	case projfs.KindScene:
 		return colScene
+	case projfs.KindObject:
+		return colDocObject
+	case projfs.KindMap:
+		return colDocMap
 	case projfs.KindDir:
 		return colDir
 	}
@@ -55,6 +59,8 @@ var projChips = []struct {
 	{"Images", projfs.KindImage, 70},
 	{"Sounds", projfs.KindSound, 70},
 	{"Scenes", projfs.KindScene, 70},
+	{"Objects", projfs.KindObject, 74},
+	{"Maps", projfs.KindMap, 58},
 }
 
 type projState struct {
@@ -341,8 +347,8 @@ func (s *Studio) projClick(e *projfs.Entry) {
 		p.collapsed[e.Path] = !p.collapsed[e.Path] // a single click toggles a folder
 	case double && e.Kind == projfs.KindCode:
 		s.openInCode(e.Path)
-	case double && e.Kind == projfs.KindScene:
-		s.Logf("Opening other scenes is not supported yet: %s", e.Path)
+	case double && (e.Kind == projfs.KindScene || e.Kind == projfs.KindObject || e.Kind == projfs.KindMap):
+		s.openDoc(e.Path)
 	default:
 		if e.Kind == projfs.KindImage || e.Kind == projfs.KindCode {
 			p.press, p.pressK, p.pressAt = e.Path, e.Kind, image.Pt(s.ui.MX, s.ui.MY)
@@ -366,7 +372,7 @@ func (s *Studio) projPreview(r image.Rectangle) {
 	u.Text(line(1), u.FitText(p.sel, float64(r.Dx()-16)), u.Theme.TextDim)
 	label := map[projfs.Kind]string{
 		projfs.KindCode: "Code (TrueDSL)", projfs.KindImage: "Image", projfs.KindSound: "Sound",
-		projfs.KindScene: "Scene", projfs.KindDir: "Folder", projfs.KindOther: "Not used by the game",
+		projfs.KindScene: "Scene", projfs.KindObject: "Object", projfs.KindMap: "Map", projfs.KindDir: "Folder", projfs.KindOther: "Not used by the game",
 	}[p.selKind]
 	u.Text(line(2), label, col)
 	switch p.selKind {
@@ -392,6 +398,8 @@ func (s *Studio) projPreview(r image.Rectangle) {
 	case projfs.KindScene:
 		name := strings.TrimSuffix(path.Base(p.sel), ".vide.json")
 		u.Text(line(3), "use: go to scene \""+name+"\"", u.Theme.TextDim)
+	case projfs.KindObject, projfs.KindMap:
+		u.Text(line(3), "double-click to open", u.Theme.TextDim)
 	case projfs.KindSound:
 		u.Text(line(3), "use: play sound \""+path.Base(p.sel)+"\"", u.Theme.TextDim)
 	}

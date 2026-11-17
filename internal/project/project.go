@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/vide2d/vide-studio/internal/assets"
+	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/scene"
 )
 
@@ -23,18 +24,26 @@ import (
 // Version 1 stored texture paths relative to an assets/ folder and script
 // paths relative to a scripts/ folder; version 2 stores both relative to the
 // project folder. Version 1 files are upgraded on load.
-const Version = 2
+//
+// Version 3 adds the document type (scene, object or map), tile_size, the
+// scene's map, instances of objects and map chunks. Older files are scenes.
+const Version = 3
 
 const (
 	maxDepth = 64
 	maxNodes = 100_000
 	maxText  = 10_000
 	maxTag   = 64
+
+	maxChunkCoord = 4096
 )
 
 type file struct {
 	Version   int    `json:"version"`
+	Type      string `json:"type,omitempty"`
 	ImageMode string `json:"image_mode,omitempty"`
+	TileSize  int    `json:"tile_size,omitempty"`
+	Map       string `json:"map,omitempty"`
 	Scene     *node  `json:"scene"`
 }
 
@@ -52,19 +61,26 @@ type node struct {
 	Template bool    `json:"template,omitempty"`
 	Text     string  `json:"text,omitempty"`
 	FontSize int     `json:"font_size,omitempty"`
+	Ref      string  `json:"ref,omitempty"`
+	Chunk    *[2]int `json:"chunk,omitempty"`
 	Children []*node `json:"children,omitempty"`
 }
 
 // Marshal serializes a scene.
 func Marshal(s *scene.Scene) ([]byte, error) {
-	return json.MarshalIndent(file{Version: Version, ImageMode: string(s.ImageMode), Scene: toNode(s.Root)}, "", "  ")
+	return json.MarshalIndent(file{Version: Version, Type: string(s.Type), ImageMode: string(s.ImageMode), TileSize: s.TileSize, Map: s.Map, Scene: toNode(s.Root)}, "", "  ")
 }
 
 func toNode(n *scene.Node) *node {
 	o := &node{Name: n.Name, Kind: string(n.Kind), X: n.X, Y: n.Y}
 	o.Tag, o.Script, o.Template = n.Tag, n.Script, n.Template
-	if n.Kind == scene.KindText {
+	switch n.Kind {
+	case scene.KindText:
 		o.Text, o.FontSize = n.Text, n.FontSize
+	case scene.KindInstance:
+		o.Ref = n.Ref
+	case scene.KindChunk:
+		o.Chunk = &[2]int{n.CX, n.CY}
 	}
 	if n.HasBox() {
 		o.W, o.H = n.W, n.H
@@ -93,6 +109,28 @@ func Unmarshal(data []byte) (*scene.Scene, error) {
 		return nil, errors.New("invalid project file: missing scene root")
 	}
 	s := scene.New(f.Scene.Name)
+	switch t := scene.DocType(f.Type); t {
+	case "":
+	case scene.DocScene, scene.DocObject, scene.DocMap:
+		s.Type = t
+	default:
+		return nil, fmt.Errorf("invalid project file: unknown type %q", f.Type)
+	}
+	if f.TileSize != 0 {
+		if f.TileSize < 1 || f.TileSize > 256 {
+			return nil, fmt.Errorf("invalid project file: bad tile_size %d", f.TileSize)
+		}
+		s.TileSize = f.TileSize
+	}
+	if f.Map != "" {
+		if s.Type != scene.DocScene {
+			return nil, errors.New("invalid project file: only scenes can use a map")
+		}
+		if !validDocRef(f.Map, projfs.MapsDir) {
+			return nil, fmt.Errorf("invalid project file: bad map path %q", f.Map)
+		}
+		s.Map = f.Map
+	}
 	switch m := scene.ImageMode(f.ImageMode); m {
 	case "":
 	case scene.ImagePixel, scene.ImageNormal:
@@ -115,6 +153,9 @@ func Unmarshal(data []byte) (*scene.Scene, error) {
 	if err := build(s, s.Root, root.Children, 1, &count); err != nil {
 		return nil, err
 	}
+	if err := validateStructure(s); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -130,7 +171,9 @@ func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *i
 			return errors.New("invalid project file: too many nodes")
 		}
 		kind := scene.Kind(k.Kind)
-		if kind != scene.KindNode && kind != scene.KindSprite && kind != scene.KindText {
+		switch kind {
+		case scene.KindNode, scene.KindSprite, scene.KindText, scene.KindInstance, scene.KindChunk:
+		default:
 			return fmt.Errorf("invalid project file: unknown node kind %q", k.Kind)
 		}
 		if k.Name == "" {
@@ -154,7 +197,23 @@ func build(s *scene.Scene, parent *scene.Node, kids []*node, depth int, count *i
 			}
 			n.FontSize = k.FontSize
 		}
-		if kind != scene.KindNode {
+		switch kind {
+		case scene.KindInstance:
+			if !validDocRef(k.Ref, projfs.ObjectsDir) {
+				return fmt.Errorf("invalid project file: %q has a bad object reference %q", k.Name, k.Ref)
+			}
+			if len(k.Children) > 0 {
+				return fmt.Errorf("invalid project file: instance %q cannot have children", k.Name)
+			}
+			n.Ref = k.Ref
+		case scene.KindChunk:
+			if k.Chunk == nil || abs(k.Chunk[0]) > maxChunkCoord || abs(k.Chunk[1]) > maxChunkCoord {
+				return fmt.Errorf("invalid project file: chunk %q has bad coordinates", k.Name)
+			}
+			n.CX, n.CY = k.Chunk[0], k.Chunk[1]
+			n.X, n.Y = s.ChunkOrigin(n)
+		}
+		if kind == scene.KindSprite || kind == scene.KindText {
 			if k.W < 1 || k.H < 1 {
 				return fmt.Errorf("invalid project file: %q has a non-positive size", k.Name)
 			}
@@ -197,6 +256,53 @@ func upgradeV1(n *node, depth int) {
 	for _, c := range n.Children {
 		upgradeV1(c, depth+1)
 	}
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// validDocRef reports whether ref is a project-relative path to a document
+// ("….vide.json") inside folder dir.
+func validDocRef(ref, dir string) bool {
+	return projfs.ValidRel(ref) && strings.HasPrefix(ref, dir+"/") && strings.HasSuffix(strings.ToLower(ref), projfs.DocExt)
+}
+
+// validateStructure checks rules that depend on the document type: maps hold
+// only chunks (each at a unique spot, content inside the chunk), and other
+// documents have no chunks.
+func validateStructure(s *scene.Scene) error {
+	if s.Type != scene.DocMap {
+		var bad *scene.Node
+		s.Root.Walk(func(n *scene.Node, _ int) {
+			if n.Kind == scene.KindChunk && bad == nil {
+				bad = n
+			}
+		})
+		if bad != nil {
+			return fmt.Errorf("invalid project file: chunk %q is only allowed in maps", bad.Name)
+		}
+		return nil
+	}
+	seen := map[[2]int]bool{}
+	size := s.ChunkSize()
+	for _, c := range s.Root.Children {
+		if c.Kind != scene.KindChunk {
+			return fmt.Errorf("invalid project file: a map can only contain chunks, found %q", c.Name)
+		}
+		key := [2]int{c.CX, c.CY}
+		if seen[key] {
+			return fmt.Errorf("invalid project file: two chunks at %d,%d", c.CX, c.CY)
+		}
+		seen[key] = true
+		if msg := scene.ChunkOverflow(c, size); msg != "" {
+			return fmt.Errorf("invalid project file: %s", msg)
+		}
+	}
+	return nil
 }
 
 // applyMeta validates and copies the tag, script and template fields.

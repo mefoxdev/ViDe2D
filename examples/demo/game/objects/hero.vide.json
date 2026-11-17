@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "type": "object",
+  "image_mode": "pixel",
+  "scene": {
+    "name": "Hero",
+    "kind": "Node",
+    "script": "scripts/hero.tdsl",
+    "children": [
+      {
+        "name": "Body",
+        "kind": "Sprite",
+        "x": 0,
+        "y": 0,
+        "w": 16,
+        "h": 16,
+        "color": "#4f9dff",
+        "texture": "assets/hero.png",
+        "tag": "player"
+      }
+    ]
+  }
+}
