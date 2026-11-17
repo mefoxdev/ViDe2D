@@ -139,3 +139,15 @@ func TestUnmarshalRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestActivate(t *testing.T) {
+	r := def()
+	r.Dock("console", "inspector", ZoneCenter)
+	r.FindLeaf("inspector").Active = 0
+	if !r.Activate("console") || r.FindLeaf("console").Active != 1 {
+		t.Fatal("activate failed")
+	}
+	if r.Activate("nope") {
+		t.Fatal("unknown panel activated")
+	}
+}

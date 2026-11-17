@@ -14,6 +14,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/text/v2"
 	"github.com/hajimehoshi/ebiten/v2/vector"
+	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/goregular"
 )
 
@@ -40,6 +41,7 @@ func DarkTheme() Theme {
 
 const (
 	FontSize   = 14
+	MonoSize   = 13
 	LineHeight = 22
 )
 
@@ -48,6 +50,13 @@ type Context struct {
 	Theme Theme
 	face  *text.GoTextFace
 	sized map[float64]*text.GoTextFace
+	mono  *text.GoTextFace
+
+	// MonoAdv is the advance width of the monospace font, in pixels.
+	MonoAdv float64
+	// External is set by code that handles the keyboard itself (e.g. the code
+	// editor); it makes Focused report true.
+	External bool
 
 	MX, MY, DX, DY            int
 	Down, Pressed             bool // left button
@@ -71,7 +80,13 @@ func New() *Context {
 	if err != nil {
 		log.Fatal(err)
 	}
-	return &Context{Theme: DarkTheme(), face: &text.GoTextFace{Source: src, Size: FontSize}, sized: map[float64]*text.GoTextFace{}}
+	msrc, err := text.NewGoTextFaceSource(bytes.NewReader(gomono.TTF))
+	if err != nil {
+		log.Fatal(err)
+	}
+	mono := &text.GoTextFace{Source: msrc, Size: MonoSize}
+	adv, _ := text.Measure("M", mono, 0)
+	return &Context{Theme: DarkTheme(), face: &text.GoTextFace{Source: src, Size: FontSize}, sized: map[float64]*text.GoTextFace{}, mono: mono, MonoAdv: adv}
 }
 
 // Begin polls input and clears the command list. Call at the start of Update.
@@ -96,7 +111,7 @@ func (c *Context) Begin() {
 		c.caret, c.frame, c.nextFocus = len(c.buf), 0, ""
 		c.focusSeen = true
 	}
-	c.Space = c.focus == "" && ebiten.IsKeyPressed(ebiten.KeySpace)
+	c.Space = !c.Focused() && ebiten.IsKeyPressed(ebiten.KeySpace)
 	c.cmds = c.cmds[:0]
 }
 
@@ -152,6 +167,14 @@ func (c *Context) DrawTextSize(dst *ebiten.Image, s string, x, y, size float64, 
 	op.GeoM.Translate(x, y)
 	op.ColorScale.ScaleWithColor(col)
 	text.Draw(dst, s, f, op)
+}
+
+// DrawMono draws s in the monospace font with its top-left at (x, y).
+func (c *Context) DrawMono(dst *ebiten.Image, s string, x, y float64, col color.RGBA) {
+	op := &text.DrawOptions{}
+	op.GeoM.Translate(x, y)
+	op.ColorScale.ScaleWithColor(col)
+	text.Draw(dst, s, c.mono, op)
 }
 
 // TextWidth returns the pixel width of s.

@@ -92,6 +92,20 @@ func (n *Node) AllPanels() []PanelID {
 	return append(n.A.AllPanels(), n.B.AllPanels()...)
 }
 
+// Activate makes id the visible tab of its group. It reports whether id exists.
+func (n *Node) Activate(id PanelID) bool {
+	leaf := n.FindLeaf(id)
+	if leaf == nil {
+		return false
+	}
+	for i, p := range leaf.Panels {
+		if p == id {
+			leaf.Active = i
+		}
+	}
+	return true
+}
+
 // Remove takes id out of the tree. An emptied leaf is collapsed into its
 // sibling. It returns false if id is not present.
 func (root *Node) Remove(id PanelID) bool {

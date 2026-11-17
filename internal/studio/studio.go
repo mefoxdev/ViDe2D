@@ -75,6 +75,7 @@ type Studio struct {
 	dock       *dock.Dock
 	tex        *textures
 	scriptsDir string
+	code       code
 	assets     assetState
 	vp         image.Rectangle // viewport content rect from the last frame
 
@@ -214,6 +215,12 @@ func (s *Studio) Update() error {
 	}
 	if r, ok := rects[panelConsole]; ok {
 		s.console(r)
+	}
+	if r, ok := rects[panelCode]; ok {
+		s.codePanel(r)
+	} else {
+		s.code.focus = false
+		u.External = false
 	}
 	if r, ok := rects[panelAssets]; ok {
 		s.assetsPanel(r)
@@ -474,9 +481,7 @@ func (s *Studio) inspector(r image.Rectangle) {
 		n.Script = ""
 	}
 	if sbtn("Open", 56, n.Script != "" && s.scriptExists(n.Script)) {
-		if err := s.openScript(n.Script); err != nil {
-			s.Logf("Cannot open script: %v", err)
-		}
+		s.openInCode(n.Script)
 	}
 	if sbtn("New", 56, n.Script == "") {
 		if err := s.newScript(n); err != nil {
@@ -811,19 +816,20 @@ const (
 	panelInspector dock.PanelID = "inspector"
 	panelConsole   dock.PanelID = "console"
 	panelAssets    dock.PanelID = "assets"
+	panelCode      dock.PanelID = "vcode"
 )
 
 var (
-	allPanels   = []dock.PanelID{panelScene, panelViewport, panelInspector, panelConsole, panelAssets}
+	allPanels   = []dock.PanelID{panelScene, panelViewport, panelInspector, panelConsole, panelAssets, panelCode}
 	panelTitles = map[dock.PanelID]string{
-		panelScene: "Scene", panelViewport: "Viewport", panelInspector: "Inspector", panelConsole: "Console", panelAssets: "Assets",
+		panelScene: "Scene", panelViewport: "Viewport", panelInspector: "Inspector", panelConsole: "Console", panelAssets: "Assets", panelCode: "VCode",
 	}
 )
 
 func defaultLayout() *dock.Node {
 	return &dock.Node{Dir: dock.SplitV, Ratio: 0.72,
 		A: &dock.Node{Dir: dock.SplitH, Ratio: 0.19, A: dock.Leaf(panelScene),
-			B: &dock.Node{Dir: dock.SplitH, Ratio: 0.8, A: dock.Leaf(panelViewport), B: dock.Leaf(panelInspector)}},
+			B: &dock.Node{Dir: dock.SplitH, Ratio: 0.8, A: dock.Leaf(panelViewport, panelCode), B: dock.Leaf(panelInspector)}},
 		B: &dock.Node{Dir: dock.SplitH, Ratio: 0.62, A: dock.Leaf(panelAssets), B: dock.Leaf(panelConsole)}}
 }
 

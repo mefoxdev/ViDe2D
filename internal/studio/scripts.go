@@ -4,9 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"unicode"
 
@@ -105,29 +103,6 @@ func (s *Studio) newScript(n *scene.Node) error {
 		return nil
 	}
 	return errors.New("too many scripts with this name")
-}
-
-// openScript opens the script in the system's default editor.
-// VCode will replace this once it exists.
-func (s *Studio) openScript(rel string) error {
-	f := s.scriptFile(rel)
-	if f == "" || !s.scriptExists(rel) {
-		return fmt.Errorf("script %q does not exist", rel)
-	}
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", f)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", f)
-	default:
-		cmd = exec.Command("xdg-open", f)
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	go cmd.Wait() // reap the child; the editor outlives us if it wants to
-	return nil
 }
 
 // validTag reports whether t is acceptable as a tag: at most 64 characters,

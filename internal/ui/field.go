@@ -12,7 +12,10 @@ import (
 const fieldPad = 6
 
 // Focused reports whether a text field currently captures the keyboard.
-func (c *Context) Focused() bool { return c.focus != "" }
+func (c *Context) Focused() bool { return c.focus != "" || c.External }
+
+// KeyRepeat reports a key press with auto-repeat (in ticks).
+func KeyRepeat(k ebiten.Key) bool { return repeat(k) }
 
 // repeat reports a key press with auto-repeat (in ticks).
 func repeat(k ebiten.Key) bool {

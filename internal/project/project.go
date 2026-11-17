@@ -196,14 +196,17 @@ func parseColor(s string) (color.RGBA, error) {
 	return color.RGBA{r, g, b, 0xff}, nil
 }
 
-// Save writes data to path atomically (temp file + rename).
-func Save(path string, data []byte) error {
+// Save writes data plus a trailing newline to path atomically.
+func Save(path string, data []byte) error { return WriteAtomic(path, append(data, '\n')) }
+
+// WriteAtomic writes data to path atomically (temp file + rename).
+func WriteAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".vide-save-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
 	}
