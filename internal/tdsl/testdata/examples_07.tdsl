@@ -1,0 +1,3 @@
+# в скрипте героя
+when touch "danger"
+  send "hero died"

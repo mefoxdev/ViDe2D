@@ -1,0 +1,8 @@
+when touch "enemy"
+  lives -= 1
+  if lives is 0
+    print "Игра окончена"
+  else if lives is 1
+    print "Последняя жизнь!"
+  else
+    print "Ничего, продолжаем"

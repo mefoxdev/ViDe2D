@@ -1,0 +1,2 @@
+when key space pressed
+  play sound "jump.wav"

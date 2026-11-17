@@ -1,0 +1,3 @@
+when update
+  if lives > 0 and key space is held
+    print "Прыгаю!"

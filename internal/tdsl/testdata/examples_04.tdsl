@@ -1,0 +1,15 @@
+shared coins = 0
+
+when start
+  text = "Монет: 0 из 5"
+
+when message "coin collected"
+  coins += 1
+  text = "Монет: {coins} из 5"
+  if coins is 5
+    send "win"
+
+when message "win"
+  text = "Ты победил!"
+  wait 3 seconds
+  go to scene "menu"
