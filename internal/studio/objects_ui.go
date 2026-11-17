@@ -9,7 +9,6 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 
-	"github.com/vide2d/vide-studio/internal/projfs"
 	"github.com/vide2d/vide-studio/internal/scene"
 	"github.com/vide2d/vide-studio/internal/ui"
 )
@@ -126,9 +125,6 @@ func (s *Studio) objectFooter(r image.Rectangle) image.Rectangle {
 	}
 	btns = append(btns,
 		footBtn{"+ Object", true, func(a image.Rectangle) { s.menu = objMenu{open: true, fresh: true, anchor: a} }},
-		footBtn{"+ Node", true, func(image.Rectangle) { s.addNode(scene.KindNode, "Node") }},
-		footBtn{"+ Sprite", true, func(image.Rectangle) { s.addNode(scene.KindSprite, "Sprite") }},
-		footBtn{"+ Text", true, func(image.Rectangle) { s.addNode(scene.KindText, "Text") }},
 		footBtn{"Delete", s.sel != nil && s.sel.Parent != nil, func(image.Rectangle) {
 			name, p := s.sel.Name, s.sel.Parent
 			s.scene.Remove(s.sel)
@@ -251,19 +247,37 @@ func (s *Studio) modalUI() {
 	s.menu.fresh, s.dlg.fresh = false, false
 }
 
+// menuEntry is one row of the "+ Object" menu.
+type menuEntry struct {
+	label string
+	col   color.RGBA
+	sep   bool // draw a separator line above this row
+	act   func()
+}
+
 func (s *Studio) objectMenu() {
 	u := s.ui
-	var refs []string
+	dim := u.Theme.Text
+	entries := []menuEntry{
+		{label: "Node", col: dim, act: func() { s.addNode(scene.KindNode, "Node") }},
+		{label: "Sprite", col: dim, act: func() { s.addNode(scene.KindSprite, "Sprite") }},
+		{label: "Text", col: dim, act: func() { s.addNode(scene.KindText, "Text") }},
+	}
+	first := true
 	for _, ref := range s.listObjects() {
-		if s.canInstance(ref) {
-			refs = append(refs, ref)
+		if !s.canInstance(ref) {
+			continue
 		}
+		ref := ref
+		entries = append(entries, menuEntry{label: objectLabel(ref), col: colDocObject, sep: first, act: func() { s.addInstance(ref) }})
+		first = false
 	}
-	rows := len(refs) + 1 // the objects and "New object…"
-	if len(refs) == 0 {
-		rows = 2 // a hint and "New object…"
-	}
-	h := rows*menuRowH + 8
+	entries = append(entries, menuEntry{label: "New object…", col: u.Theme.Text, sep: true, act: func() {
+		s.dlg = newDlg{open: true, fresh: true, typ: scene.DocObject}
+		u.FocusField(newDocID, "")
+	}})
+
+	h := len(entries)*menuRowH + 8
 	a := s.menu.anchor
 	box := image.Rect(a.Min.X, a.Min.Y-h-4, a.Min.X+menuW, a.Min.Y-4)
 	if box.Min.Y < toolbarH {
@@ -281,38 +295,22 @@ func (s *Studio) objectMenu() {
 		ui.StrokeRect(d, box, u.Theme.Accent)
 	})
 	y := box.Min.Y + 4
-	row := func() image.Rectangle {
+	for _, e := range entries {
 		r := image.Rect(box.Min.X+2, y, box.Max.X-2, y+menuRowH)
 		y += menuRowH
-		return r
-	}
-	if len(refs) == 0 {
-		u.Text(row().Inset(6), "No objects yet in "+projfs.ObjectsDir, u.Theme.TextDim)
-	}
-	for _, ref := range refs {
-		r := row()
 		hover := u.Hover(r)
 		if hover {
 			u.Fill(r, u.Theme.ButtonHover)
 		}
-		u.Text(image.Rect(r.Min.X+8, r.Min.Y, r.Max.X-4, r.Max.Y), u.FitText(objectLabel(ref), float64(r.Dx()-16)), colDocObject)
+		if e.sep {
+			u.Fill(image.Rect(r.Min.X, r.Min.Y, r.Max.X, r.Min.Y+1), u.Theme.Border)
+		}
+		u.Text(image.Rect(r.Min.X+8, r.Min.Y, r.Max.X-4, r.Max.Y), u.FitText(e.label, float64(r.Dx()-16)), e.col)
 		if hover && u.Pressed && !s.menu.fresh {
 			s.menu.open = false
-			s.addInstance(ref)
+			e.act()
 			return
 		}
-	}
-	r := row()
-	hover := u.Hover(r)
-	if hover {
-		u.Fill(r, u.Theme.ButtonHover)
-	}
-	u.Fill(image.Rect(r.Min.X, r.Min.Y, r.Max.X, r.Min.Y+1), u.Theme.Border)
-	u.Text(image.Rect(r.Min.X+8, r.Min.Y, r.Max.X, r.Max.Y), "New object…", u.Theme.Text)
-	if hover && u.Pressed && !s.menu.fresh {
-		s.menu.open = false
-		s.dlg = newDlg{open: true, fresh: true, typ: scene.DocObject}
-		u.FocusField(newDocID, "")
 	}
 }
 

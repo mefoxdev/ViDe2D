@@ -24,7 +24,9 @@ func newTestStudio(t *testing.T) *Studio {
 
 func TestNewDocFileCreatesInStandardFolders(t *testing.T) {
 	s := newTestStudio(t)
-	for typ, dir := range map[scene.DocType]string{scene.DocObject: "game/objects", scene.DocScene: "game/scenes", scene.DocMap: "game/maps"} {
+	dirs := map[scene.DocType]string{scene.DocObject: "game/objects", scene.DocScene: "game/scenes", scene.DocMap: "game/maps"}
+	for _, typ := range []scene.DocType{scene.DocObject, scene.DocScene, scene.DocMap} { // the map is created last
+		dir := dirs[typ]
 		if err := s.newDocFile(typ, "My "+string(typ)); err != nil {
 			t.Fatalf("%s: %v", typ, err)
 		}
