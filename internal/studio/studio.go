@@ -9,11 +9,13 @@ import (
 	"image/color"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 
+	"github.com/vide2d/vide-studio/internal/dock"
 	"github.com/vide2d/vide-studio/internal/project"
 	"github.com/vide2d/vide-studio/internal/scene"
 	"github.com/vide2d/vide-studio/internal/ui"
@@ -21,9 +23,6 @@ import (
 
 const (
 	toolbarH = 40
-	leftW    = 240
-	rightW   = 270
-	bottomH  = 150
 	rowH     = 24
 	gridStep = 16
 
@@ -69,6 +68,7 @@ type Studio struct {
 
 	treeScroll int
 	mode       ViewMode
+	dock       *dock.Dock
 
 	path  string // project file; empty disables saving
 	saved []byte // serialized scene as last saved/loaded
@@ -82,6 +82,7 @@ type Studio struct {
 // overwritten: saving is disabled until the problem is fixed.
 func New(path string) *Studio {
 	s := &Studio{ui: ui.New(), zoom: 2, path: path}
+	s.dock = dock.New(loadLayout(), panelTitles)
 	loaded := false
 	if path != "" {
 		sc, err := project.Load(path)
@@ -185,18 +186,28 @@ func (s *Studio) Draw(dst *ebiten.Image) { s.ui.Render(dst) }
 func (s *Studio) Update() error {
 	u := s.ui
 	u.Begin()
-	full := image.Rect(0, 0, s.w, s.h)
 	toolbar := image.Rect(0, 0, s.w, toolbarH)
-	left := image.Rect(0, toolbarH, leftW, s.h-bottomH)
-	right := image.Rect(s.w-rightW, toolbarH, s.w, s.h-bottomH)
-	bottom := image.Rect(0, s.h-bottomH, s.w, s.h)
-	view := image.Rect(leftW, toolbarH, s.w-rightW, s.h-bottomH).Intersect(full)
+	rects := s.dock.Update(u, image.Rect(0, toolbarH, s.w, s.h))
 
-	s.viewport(view)
+	if r, ok := rects[panelViewport]; ok {
+		s.viewport(r)
+	}
 	s.toolbar(toolbar)
-	s.treePanel(left)
-	s.inspector(right)
-	s.console(bottom)
+	if r, ok := rects[panelScene]; ok {
+		s.treePanel(r)
+	}
+	if r, ok := rects[panelInspector]; ok {
+		s.inspector(r)
+	}
+	if r, ok := rects[panelConsole]; ok {
+		s.console(r)
+	}
+	s.dock.DrawOverlay(u)
+	if s.dock.Changed() {
+		if err := saveLayout(s.dock.Root); err != nil {
+			s.Logf("Layout not saved: %v", err)
+		}
+	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyTab) && !u.Focused() {
 		s.mode = 1 - s.mode
 	}
@@ -253,6 +264,13 @@ func (s *Studio) toolbar(r image.Rectangle) {
 			s.mode = m.mode
 		}
 	}
+	if btn("Layout", 70, true) {
+		s.dock.Root = defaultLayout()
+		if err := saveLayout(s.dock.Root); err != nil {
+			s.Logf("Layout not saved: %v", err)
+		}
+		s.Logf("Layout reset. Drag panel tabs to re-dock, drag the gaps between panels to resize.")
+	}
 	x += 14
 	if btn("Save", 70, s.path != "") {
 		s.save()
@@ -269,7 +287,7 @@ func (s *Studio) toolbar(r image.Rectangle) {
 
 func (s *Studio) treePanel(r image.Rectangle) {
 	u := s.ui
-	c := u.Panel(r, "Scene")
+	c := r
 	if u.Hover(c) && u.Wheel != 0 {
 		s.treeScroll -= int(u.Wheel * 3 * rowH / 2)
 	}
@@ -316,7 +334,7 @@ func (s *Studio) clippedText(clip, r image.Rectangle, text string, col color.RGB
 
 func (s *Studio) inspector(r image.Rectangle) {
 	u := s.ui
-	c := u.Panel(r, "Inspector")
+	c := r
 	n := s.sel
 	if n == nil {
 		u.Text(image.Rect(c.Min.X+8, c.Min.Y+4, c.Max.X, c.Min.Y+4+ui.LineHeight), "Nothing selected", u.Theme.TextDim)
@@ -381,7 +399,7 @@ func (s *Studio) stepper(id int, r image.Rectangle, label string, v *int, step i
 
 func (s *Studio) console(r image.Rectangle) {
 	u := s.ui
-	c := u.Panel(r, "Console")
+	c := r
 	lines := (c.Dy() - 8) / ui.LineHeight
 	start := max(0, len(s.log)-lines)
 	for i, l := range s.log[start:] {
@@ -625,4 +643,63 @@ func (s *Studio) drawBlueprint(d *ebiten.Image, r image.Rectangle, ox, oy, z int
 		}
 	}
 	u.DrawText(d, fmt.Sprintf("blueprint  zoom %dx", z), float64(r.Min.X+8), float64(r.Max.Y-22), bpDim)
+}
+
+// ---- panel layout ----
+
+const (
+	panelScene     dock.PanelID = "scene"
+	panelViewport  dock.PanelID = "viewport"
+	panelInspector dock.PanelID = "inspector"
+	panelConsole   dock.PanelID = "console"
+)
+
+var (
+	allPanels   = []dock.PanelID{panelScene, panelViewport, panelInspector, panelConsole}
+	panelTitles = map[dock.PanelID]string{
+		panelScene: "Scene", panelViewport: "Viewport", panelInspector: "Inspector", panelConsole: "Console",
+	}
+)
+
+func defaultLayout() *dock.Node {
+	return &dock.Node{Dir: dock.SplitV, Ratio: 0.78,
+		A: &dock.Node{Dir: dock.SplitH, Ratio: 0.19, A: dock.Leaf(panelScene),
+			B: &dock.Node{Dir: dock.SplitH, Ratio: 0.8, A: dock.Leaf(panelViewport), B: dock.Leaf(panelInspector)}},
+		B: dock.Leaf(panelConsole)}
+}
+
+func layoutPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "vide-studio", "layout.json")
+}
+
+// loadLayout returns the saved layout, or the default if it is missing or invalid.
+func loadLayout() *dock.Node {
+	if p := layoutPath(); p != "" {
+		if data, err := os.ReadFile(p); err == nil {
+			if n, err := dock.Unmarshal(data, allPanels); err == nil {
+				return n
+			}
+		}
+	}
+	return defaultLayout()
+}
+
+// saveLayout stores the layout in the user config directory.
+func saveLayout(n *dock.Node) error {
+	p := layoutPath()
+	if p == "" {
+		return errors.New("no user config directory")
+	}
+	data, err := dock.Marshal(n)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return project.Save(p, data)
 }
