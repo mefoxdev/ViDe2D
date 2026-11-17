@@ -294,9 +294,10 @@ func (s *Studio) codePanel(r image.Rectangle) {
 	if c.buf.Version() != c.diagVer && c.frame%diagDelay == 0 {
 		s.runDiag()
 	}
+	l = s.codeLayout(r) // the number of problems may have changed above
 
 	// problems list
-	for i := 0; i < l.rows; i++ {
+	for i := 0; i < l.rows && i < len(c.diag); i++ {
 		row := image.Rect(l.problems.Min.X, l.problems.Min.Y+3+i*codeRowH, l.problems.Max.X, l.problems.Min.Y+3+(i+1)*codeRowH)
 		e := c.diag[i]
 		if u.Hover(row) {

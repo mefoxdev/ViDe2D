@@ -1,12 +1,14 @@
 package studio
 
 import (
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/vide2d/vide-studio/internal/scene"
+	"github.com/vide2d/vide-studio/internal/tdsl"
 )
 
 func TestSafeFileName(t *testing.T) {
@@ -57,5 +59,17 @@ func TestScriptFileRejectsEscape(t *testing.T) {
 func TestValidTag(t *testing.T) {
 	if !validTag("coin") || !validTag("") || validTag("a\x07") || validTag(strings.Repeat("я", 65)) || !validTag(strings.Repeat("я", 64)) {
 		t.Fatal("validTag wrong")
+	}
+}
+
+func TestCodeLayoutRowsFollowDiagnostics(t *testing.T) {
+	s := &Studio{}
+	r := image.Rect(0, 0, 400, 300)
+	if l := s.codeLayout(r); l.rows != 0 || l.problems.Dy() != 0 {
+		t.Fatalf("no problems: %+v", l)
+	}
+	s.code.diag = make([]*tdsl.Error, 9)
+	if l := s.codeLayout(r); l.rows != codeMaxRows || l.problems.Dy() != codeMaxRows*codeRowH+6 {
+		t.Fatalf("many problems: %+v", l)
 	}
 }
